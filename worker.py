@@ -6,12 +6,14 @@ import requests
 import subprocess
 import glob
 import re
-import concurrent.futures
 import firebase_admin
 from firebase_admin import credentials, firestore, db
 import pysubs2
-from deep_translator import GoogleTranslator
 from requests_toolbelt.multipart.encoder import MultipartEncoder
+from faster_whisper import WhisperModel
+import urllib.parse
+import concurrent.futures
+from deep_translator import GoogleTranslator
 
 # --- 🗣️ SPOKEN SINHALA DICTIONARY ---
 try:
@@ -20,8 +22,7 @@ except ImportError:
     SPOKEN_DICT = {}
 
 def apply_spoken_sinhala(text):
-    if not text or not SPOKEN_DICT: 
-        return text
+    if not text or not SPOKEN_DICT: return text
     sorted_keys = sorted(SPOKEN_DICT.keys(), key=len, reverse=True)
     result_text = str(text)
     for key in sorted_keys:
@@ -35,19 +36,14 @@ cred = credentials.Certificate("serviceAccountKey.json")
 FIREBASE_DB_URL = os.environ.get("FIREBASE_DB_URL", "https://anishift-5d14b-default-rtdb.firebaseio.com")
 
 if not firebase_admin._apps:
-    firebase_admin.initialize_app(cred, {
-        'databaseURL': FIREBASE_DB_URL
-    })
+    firebase_admin.initialize_app(cred, {'databaseURL': FIREBASE_DB_URL})
 fs_db = firestore.client()
 
-# --- ⚙️ ABYSS.TO API SETTINGS (LONG ACCOUNT) ---
-ABYSS_API_KEY = os.environ.get("ABYSS_API_KEY_LONG", "")
-ABYSS_EMAIL = os.environ.get("ABYSS_EMAIL_LONG", "")
-ABYSS_PASSWORD = os.environ.get("ABYSS_PASSWORD_LONG", "")
+ABYSS_API_KEY = os.environ.get("ABYSS_API_KEY", "")
+ABYSS_EMAIL = os.environ.get("ABYSS_EMAIL", "")       
+ABYSS_PASSWORD = os.environ.get("ABYSS_PASSWORD", "") 
+RTDB_WORKER_FEEDBACK = "worker_job_status_short"
 ABYSS_UPLOAD_URL = f"https://up.abyss.to/{ABYSS_API_KEY}"
-
-# Feedback Node එක වෙනස් කර ඇත (Bot 2 සඳහා)
-RTDB_WORKER_FEEDBACK = "worker_job_status_long"
 
 payload = json.loads(os.environ.get("JOB_PAYLOAD", "{}"))
 anime_id = payload.get("anilist_id")
@@ -57,7 +53,8 @@ job_type = payload.get("job_type")
 search_type = payload.get("search_type")
 anime_title = payload.get("title", "Unknown Anime")
 
-print(f"🚀 [WORKER STARTED] Anime: {anime_title} | Ep: {ep_num} | Mode: API SOFTSUB (BOT 2 - LONG)")
+safe_anime_title = re.sub(r'[\\/*?:"<>|]', "", anime_title).strip()
+print(f"🚀 [WORKER STARTED - V8 LONG BATCH] Anime: {safe_anime_title} | Ep: {ep_num}", flush=True)
 
 BASE_DIR = "downloads"
 TEMP_SUB_DIR = f"temp_subs_ep_{ep_num}"
@@ -66,15 +63,12 @@ os.makedirs(TEMP_SUB_DIR, exist_ok=True)
 
 def notify_status(status="failed", file_size=0):
     try:
-        db.reference(RTDB_WORKER_FEEDBACK).set({
-            "status": status,
-            "anilist_id": str(anime_id),
-            "episode": int(ep_num),
-            "file_size": file_size,
+        db.reference(RTDB_WORKER_FEEDBACK).update({
+            "status": status, "anilist_id": str(anime_id),
+            "episode": int(ep_num), "file_size": file_size,
             "timestamp": time.time()
         })
-    except Exception as e:
-        print(f"⚠️ Failed to write RTDB feedback: {e}")
+    except: pass
 
 def extract_ep_number(filename):
     clean = re.sub(r'\[.*?\]|\(.*?\)', ' ', filename.lower())
@@ -89,9 +83,80 @@ def extract_ep_number(filename):
     if m: return int(m.group(1))
     return None
 
-# --- 1. DOWNLOADING VIDEO (Aria2c) ---
+def detect_encoding(file_path):
+    for enc in ['utf-8', 'utf-8-sig', 'latin-1', 'cp1252']:
+        try:
+            with open(file_path, 'r', encoding=enc) as f:
+                f.read(1024)
+            return enc
+        except Exception:
+            continue
+    return 'utf-8'
+
+def clean_vtt_tags(text):
+    if not text: return ""
+    text = re.sub(r'\{.*?\}', '', text).replace('\\h', ' ')
+    return re.sub(r'<[^>]+>', '', text).strip()
+
+def is_garbage_sub(text):
+    if not text: return True
+    if re.search(r'\\pos\(|\\c&H|\\alpha|\\t\(|\\fad\(|\\an\d', text): return True
+    cl = re.sub(r'<[^>]+>', '', re.sub(r'\{.*?\}', '', text)).strip()
+    if re.match(r'^m\s+-?\d+(?:\.\d+)?\s+-?\d+(?:\.\d+)?\s+(?:l|b|s|c|m)\s+', cl): return True
+    return False
+
+def has_sinhala_characters(text):
+    return bool(re.search(r'[\u0D80-\u0DFF]', str(text)))
+
+def has_letters(text):
+    return bool(re.search(r'[a-zA-Z\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff]', str(text)))
+
+WARP_PROXIES = {
+    "http": "socks5://127.0.0.1:40000",
+    "https": "socks5://127.0.0.1:40000"
+}
+LINGVA_SERVERS = ["https://lingva.ml", "https://lingva.lunar.icu", "https://translate.plausibility.cloud"]
+
+def translate_guaranteed_sinhala(text):
+    if not text or len(text.strip()) == 0: return ""
+    if not has_letters(text): return text
+
+    for macro_attempt in range(2): 
+        for attempt in range(2):
+            try:
+                translator = GoogleTranslator(source='auto', target='si', proxies=WARP_PROXIES)
+                res = translator.translate(text)
+                if res and has_sinhala_characters(res):
+                    return apply_spoken_sinhala(res)
+            except: time.sleep(1)
+
+        try:
+            url = "https://clients5.google.com/translate_a/t"
+            params = {"client": "dict-chrome-ex", "sl": "auto", "tl": "si", "q": text}
+            headers = {"User-Agent": "Mozilla/5.0"}
+            resp = requests.get(url, params=params, headers=headers, proxies=WARP_PROXIES, timeout=5)
+            if resp.status_code == 200:
+                data = resp.json()
+                if isinstance(data, list) and len(data) > 0:
+                    res_text = str(data[0][0]) if isinstance(data[0], list) else str(data[0])
+                    if res_text and has_sinhala_characters(res_text):
+                        return apply_spoken_sinhala(res_text)
+        except: pass
+
+        try:
+            translator = GoogleTranslator(source='auto', target='si')
+            res = translator.translate(text)
+            if res and has_sinhala_characters(res):
+                return apply_spoken_sinhala(res)
+        except: pass
+        time.sleep(1)
+
+    return ""
+
 def download_video():
-    print(f"📥 Starting Download...")
+    print(f"📥 Starting Download...", flush=True)
+    timeout_arg = '--bt-stop-timeout=300'
+    
     if search_type == "BATCH":
         subprocess.run(['aria2c', '--bt-metadata-only=true', '--bt-save-metadata=true', '--seed-time=0', '--bt-stop-timeout=120', magnet])
         torrent_files = glob.glob("*.torrent")
@@ -99,14 +164,24 @@ def download_video():
             from torrentool.api import Torrent
             my_torrent = Torrent.from_file(torrent_files[0])
             target_idx = None
+            
+            # 🔥 Batch එකේ එපිසෝඩ් එක තියෙනවද චෙක් කරනවා
             for idx, f in enumerate(my_torrent.files, start=1):
                 if f.name.lower().endswith(('.mkv', '.mp4')) and extract_ep_number(os.path.basename(f.name)) == int(ep_num):
                     target_idx = idx
                     break
+            
             if target_idx:
-                subprocess.run(['aria2c', '--seed-time=0', f'--select-file={target_idx}', f'--dir={BASE_DIR}', torrent_files[0]])
+                subprocess.run(['aria2c', '--seed-time=0', f'--select-file={target_idx}', f'--dir={BASE_DIR}', timeout_arg, torrent_files[0]])
+            else:
+                # 🛑 Batch එකේ එපිසෝඩ් එක නැත්නම් (උදා: Batch එක ඉවරයි), Bot 2 ට ඒක දැනුම් දෙනවා
+                print(f"🛑 Episode {ep_num} not found in this batch! Ending batch processing.", flush=True)
+                try:
+                    db.reference(RTDB_WORKER_FEEDBACK).update({"status": "failed_batch_ended"})
+                except: pass
+                sys.exit(0) # Worker එක එතනින්ම නවත්වනවා!
     else:
-        subprocess.run(['aria2c', '--seed-time=0', f'--dir={BASE_DIR}', magnet])
+        subprocess.run(['aria2c', '--seed-time=0', f'--dir={BASE_DIR}', timeout_arg, magnet])
 
     target_ep_int = int(ep_num)
     for root, dirs, files in os.walk(BASE_DIR):
@@ -115,95 +190,145 @@ def download_video():
                 return os.path.join(root, f)
     for root, dirs, files in os.walk(BASE_DIR):
         for f in files:
-            if f.endswith(('.mkv', '.mp4')):
-                return os.path.join(root, f)
+            if f.endswith(('.mkv', '.mp4')): return os.path.join(root, f)
     return None
 
-# --- 2. EXTRACT & TRANSLATE SUBTITLE (TO .SRT) ---
-def clean_vtt_tags(text):
-    if not text: return ""
-    t = str(text)
-    t = re.sub(r'\{.*?\}', '', t).replace('\\h', ' ').replace('\\N', '\n')
-    return re.sub(r'<[^>]+>', '', t).strip()
+def extract_and_score_subtitles(video_path):
+    print("🔍 Scanning video for softsubs...", flush=True)
+    eng_sub_path = os.path.join(TEMP_SUB_DIR, "extracted.srt")
+    cmd = ['ffprobe', '-v', 'error', '-select_streams', 's', '-show_entries', 'stream=index:stream_tags=language:stream_tags=title', '-of', 'json', video_path]
+    
+    try:
+        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        streams = json.loads(result.stdout).get('streams', [])
+        if not streams: return None
+
+        valid_subs_data = []
+        for s in streams:
+            idx = s['index']
+            lang = s.get('tags', {}).get('language', '').lower()
+            title = s.get('tags', {}).get('title', '').lower()
+            
+            temp_sub = os.path.join(TEMP_SUB_DIR, f"temp_track_{idx}.srt")
+            subprocess.run(['ffmpeg', '-i', video_path, '-map', f'0:{idx}', temp_sub, '-y'], stderr=subprocess.DEVNULL)
+            
+            if os.path.exists(temp_sub) and os.path.getsize(temp_sub) > 100:
+                try:
+                    try: subs = pysubs2.load(temp_sub, encoding='utf-8')
+                    except: subs = pysubs2.load(temp_sub, encoding='latin-1')
+                    line_count = len(subs.events)
+                    score = line_count
+                    if line_count >= 150:
+                        if lang == 'en' or 'eng' in title or 'english' in title: score += 100000 
+                        elif lang == 'ja' or 'jap' in title or 'romaji' in title: score -= 100000 
+                    else: score -= 50000 
+                    valid_subs_data.append({'index': idx, 'path': temp_sub, 'lines': line_count, 'score': score, 'name': title})
+                except Exception: pass
+
+        if valid_subs_data:
+            valid_subs_data.sort(key=lambda x: x['score'], reverse=True)
+            best_sub = valid_subs_data[0]
+            if best_sub['lines'] >= 150:
+                os.rename(best_sub['path'], eng_sub_path)
+                for loser in valid_subs_data[1:]:
+                    if os.path.exists(loser['path']): os.remove(loser['path'])
+                return eng_sub_path
+    except Exception: pass
+    return None
+
+def process_sinhala_sub(sub_path):
+    out_name = os.path.join(TEMP_SUB_DIR, "sinhala_sub.srt")
+    try:
+        print("🧹 Cleaning dialogs & unwanted lines...", flush=True)
+        try: subs = pysubs2.load(sub_path, encoding=detect_encoding(sub_path))
+        except: subs = pysubs2.load(sub_path, encoding='latin-1')
+        
+        cleaned_events, unique_texts, prev_text, seen_texts_count = [], set(), "", {}
+        bad_words = ['subtitle by', 'translated by', 'sync by', 'encoded by', 'www.', '.com', 'discord', 'telegram', 'netlify', 'anishift', 'download කිරීමට', 'නැරඹීමට']
+        
+        for e in subs:
+            if is_garbage_sub(e.text): continue
+            txt, t_low = clean_vtt_tags(e.text), clean_vtt_tags(e.text).lower()
+            if any(x in t_low for x in bad_words) or len(txt) > 250 or len(txt) < 2 or '♪' in txt or '♫' in txt: continue
+            if txt == prev_text:
+                if cleaned_events: cleaned_events[-1].end = max(cleaned_events[-1].end, e.end)
+                continue
+            seen_texts_count[txt] = seen_texts_count.get(txt, 0) + 1
+            if len(txt) > 30 and seen_texts_count[txt] > 2: continue
+            
+            e.text = txt
+            cleaned_events.append(e)
+            unique_texts.add(txt)
+            prev_text = txt
+            
+        if not cleaned_events: return None
+        
+        uni_list = list(unique_texts)
+        total_lines = len(uni_list)
+        print(f"🚀 Translating {total_lines} lines (Strict Sinhala Mode ⚡)...", flush=True)
+        
+        translation_map = {}
+        def process_single(text): return text, translate_guaranteed_sinhala(text)
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=15) as executor:
+            futures = [executor.submit(process_single, t) for t in uni_list]
+            done_lines = 0
+            for future in concurrent.futures.as_completed(futures):
+                orig, trans = future.result()
+                translation_map[orig] = trans
+                done_lines += 1
+                if done_lines % 25 == 0 or done_lines == total_lines:
+                    print(f"   📊 Progress: {int((done_lines/total_lines)*100)}%", flush=True)
+                    
+        final_events = []
+        for event in cleaned_events: 
+            translated_text = translation_map.get(event.text, event.text)
+            if translated_text != "": 
+                event.text = translated_text
+                final_events.append(event)
+            
+        subs.events = final_events
+        subs.save(out_name, encoding="utf-8")
+        return out_name
+    except Exception as e:
+        print(f"❌ Error: {e}", flush=True)
+        return None
 
 def process_and_translate_subtitle(video_path):
-    print("📝 Extracting Embedded Subtitle from Video...")
     eng_sub = os.path.join(TEMP_SUB_DIR, "extracted.srt") 
-    
-    subprocess.run(['ffmpeg', '-i', video_path, '-map', '0:s:0', eng_sub, '-y'], stderr=subprocess.DEVNULL)
-    
-    if not os.path.exists(eng_sub) or os.path.getsize(eng_sub) < 100:
-        print("❌ Video has no embedded subtitle!")
-        return None
+    extracted_successfully = False
+    best_sub_path = extract_and_score_subtitles(video_path)
+    if best_sub_path and os.path.exists(best_sub_path):
+        extracted_successfully = True
+        eng_sub = best_sub_path
 
-    print("⚡ Translating Extracted Subtitle to Sinhala...")
-    try: 
-        subs = pysubs2.load(eng_sub)
-    except: 
-        return None
-
-    unique_texts = list(set([clean_vtt_tags(e.text) for e in subs if e.text and len(clean_vtt_tags(e.text)) >= 2]))
-    translation_map = {}
-    
-    def translate_single_line(text):
-        translator = GoogleTranslator(source='auto', target='si')
-        for attempt in range(5):
+    if not extracted_successfully:
+        print("⚠️ Starting AI Audio Transcription as fallback...", flush=True)
+        audio_path = os.path.join(TEMP_SUB_DIR, "audio.mp3")
+        subprocess.run(['ffmpeg', '-i', video_path, '-vn', '-acodec', 'libmp3lame', '-q:a', '2', audio_path, '-y'], stderr=subprocess.DEVNULL)
+        if os.path.exists(audio_path):
             try:
-                res = translator.translate(text)
-                if res and "Error 500" not in str(res):
-                    return apply_spoken_sinhala(res)
+                model = WhisperModel("base", device="cpu", compute_type="int8")
+                segments, info = model.transcribe(audio_path, task="translate")
+                subs = pysubs2.SSAFile()
+                for segment in segments:
+                    subs.events.append(pysubs2.SSAEvent(start=int(segment.start * 1000), end=int(segment.end * 1000), text=segment.text.strip()))
+                subs.save(eng_sub, encoding="utf-8")
+                extracted_successfully = True
             except: pass
-            time.sleep(1 + attempt)
-        return text
+    if not extracted_successfully: return None
+    return process_sinhala_sub(eng_sub)
 
-    def safe_translate_batch(batch_chunk):
-        translator = GoogleTranslator(source='auto', target='si')
-        batch_res = {}
-        failed_lines = []
-        try:
-            res = translator.translate_batch(batch_chunk)
-            for orig, trans in zip(batch_chunk, res):
-                if "Error 500" in str(trans):
-                    failed_lines.append(orig)
-                else:
-                    batch_res[orig] = apply_spoken_sinhala(trans)
-        except:
-            failed_lines = list(batch_chunk)
-            
-        for f_line in failed_lines:
-            batch_res[f_line] = translate_single_line(f_line)
-            
-        return batch_res
+def get_abyss_token():
+    print("🔑 Authenticating with Abyss...", flush=True)
+    if not ABYSS_EMAIL or not ABYSS_PASSWORD: return None
+    try:
+        res = requests.post("https://api.abyss.to/auth/login", json={"email": ABYSS_EMAIL, "password": ABYSS_PASSWORD}).json()
+        return res.get("token")
+    except: return None
 
-    chunks = [unique_texts[i:i+20] for i in range(0, len(unique_texts), 20)]
-    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
-        futures = [executor.submit(safe_translate_batch, chunk) for chunk in chunks]
-        for future in concurrent.futures.as_completed(futures):
-            translation_map.update(future.result())
-
-    for e in subs:
-        if e.text:
-            cl = clean_vtt_tags(e.text)
-            e.text = str(translation_map.get(cl, cl))
-            
-    wm_text = "සිංහල උපසිරසි සමඟ Anime Movies/Series\nනැරඹීමට හා Download කිරීමට පිවිසෙන්න\n<font color=\"#1E90FF\">anishift.netlify.app</font>"
-    
-    start_wm = pysubs2.SSAEvent(start=5000, end=15000, text=wm_text)
-    subs.insert(0, start_wm)
-    
-    if len(subs) > 1:
-        last_time = max([e.end for e in subs if e.text != wm_text])
-        end_wm = pysubs2.SSAEvent(start=last_time + 2000, end=last_time + 12000, text=wm_text)
-        subs.append(end_wm)
-
-    sin_sub_srt = os.path.join(TEMP_SUB_DIR, "sinhala_sub.srt")
-    subs.save(sin_sub_srt, encoding="utf-8")
-    print("✅ Sinhala .SRT Subtitle File Created Successfully!")
-    return sin_sub_srt
-
-# --- 3. UPLOAD RAW VIDEO TO ABYSS.TO ---
 def upload_video_to_abyss(video_path):
-    print("☁️ Uploading Original Video to Abyss.to...")
+    print("☁️ Uploading Video to Abyss.to...", flush=True)
     upload_filename = os.path.basename(video_path)
     mime_type = 'video/x-matroska' if upload_filename.endswith('.mkv') else 'video/mp4'
 
@@ -211,88 +336,36 @@ def upload_video_to_abyss(video_path):
         try:
             fields = {'file': (upload_filename, open(video_path, 'rb'), mime_type)}
             multipart_data = MultipartEncoder(fields=fields)
-            
-            headers = {
-                'Content-Type': multipart_data.content_type,
-                'User-Agent': 'Mozilla/5.0'
-            }
-
+            headers = {'Content-Type': multipart_data.content_type, 'User-Agent': 'Mozilla/5.0'}
             up_resp = requests.post(ABYSS_UPLOAD_URL, data=multipart_data, headers=headers, timeout=1200)
-            
-            try:
-                resp_data = up_resp.json()
-            except json.JSONDecodeError:
+            try: resp_data = up_resp.json()
+            except: 
                 if attempt < 2: time.sleep(15)
                 continue
 
-            if resp_data.get("status") is True or str(resp_data.get("status")) == "200":
+            if str(resp_data.get("status")) in ["True", "200", "true"]:
                 vhd_code = resp_data.get("slug") or resp_data.get("id") or resp_data.get("code")
-                if vhd_code:
-                    file_size = os.path.getsize(video_path)
-                    print(f"✅ Video Uploaded Successfully! Slug: {vhd_code}")
-                    return vhd_code, file_size
-
-        except Exception as e:
+                if vhd_code: return vhd_code, os.path.getsize(video_path)
+        except:
             if attempt < 2: time.sleep(15)
-                
     return None, 0
 
-# --- 4. UPLOAD SUBTITLE TO ABYSS API (JWT AUTH) ---
-def get_abyss_token():
-    print("🔑 Authenticating with Abyss to get JWT Token...")
-    if not ABYSS_EMAIL or not ABYSS_PASSWORD:
-        print("⚠️ ABYSS_EMAIL or ABYSS_PASSWORD not found in environment variables!")
-        return None
-        
-    login_url = "https://api.abyss.to/auth/login"
-    login_payload = {"email": ABYSS_EMAIL, "password": ABYSS_PASSWORD}
-    
-    try:
-        login_resp = requests.post(login_url, json=login_payload).json()
-        token = login_resp.get("token")
-        if token:
-            print("✅ JWT Token Retrieved Successfully!")
-            return token
-        else:
-            print(f"❌ Login Failed: {login_resp}")
-    except Exception as e:
-        print(f"⚠️ Auth Error: {e}")
-    return None
-
 def upload_subtitle_to_abyss_api(vhd_code, srt_path, token):
-    print(f"☁️ Uploading Sinhala Subtitle to {vhd_code}...")
+    print("☁️ Uploading Sinhala Subtitle to Abyss...", flush=True)
     try:
         url = f"https://api.abyss.to/v1/upload/subtitles/{vhd_code}?language=Sinhala&filename=sinhala.srt"
-        
-        headers = {
-            "Authorization": f"Bearer {token}",
-            "Content-Type": "application/octet-stream",
-            "User-Agent": "Mozilla/5.0"
-        }
-        
-        with open(srt_path, "rb") as f:
-            sub_data = f.read()
-            
+        headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/octet-stream"} 
+        with open(srt_path, "rb") as f: sub_data = f.read()
         resp = requests.put(url, headers=headers, data=sub_data, timeout=60)
-        
-        if resp.status_code == 200:
-            print("🎉 Subtitle Attached Successfully via Abyss API!")
-        else:
-            print(f"❌ Failed to attach subtitle. HTTP {resp.status_code}: {resp.text}")
-            
-    except Exception as e:
-        print(f"⚠️ Subtitle API Upload Error: {e}")
+        if resp.status_code == 200: print("🎉 Subtitle Attached Successfully!", flush=True)
+    except: pass
 
-# --- 5. UPDATE DATABASE ---
 def update_database(file_code):
-    print("💾 Updating Firestore...")
+    print("💾 Updating Firestore...", flush=True)
     ep_doc_id = f"episode_{int(ep_num):04d}" if str(ep_num).isdigit() else f"episode_{ep_num}"
     fs_db.collection('anime_series').document(str(anime_id)).collection('episodes').document(ep_doc_id).set({
         'status': 'uploaded',
-        'links': {
-            'abyss_video_id': file_code,
-            'abyss_embed': f"https://abyss.to/embed/{file_code}"
-        },
+        'links': {'abyss_video_id': file_code, 'abyss_embed': f"https://abyss.to/embed/{file_code}"},
         'last_updated': firestore.SERVER_TIMESTAMP
     }, merge=True)
 
@@ -301,26 +374,30 @@ original_video = download_video()
 
 if original_video:
     srt_sub_path = process_and_translate_subtitle(original_video)
+    jwt_token = get_abyss_token()
     
-    upload_result = upload_video_to_abyss(original_video)
+    print("✂️ Removing existing internal subtitles from video...", flush=True)
+    original_filename = os.path.basename(original_video)
+    clean_video = os.path.join(TEMP_SUB_DIR, original_filename)
+    subprocess.run(['ffmpeg', '-i', original_video, '-c', 'copy', '-sn', clean_video, '-y'], stderr=subprocess.DEVNULL)
+    video_to_upload = clean_video if os.path.exists(clean_video) else original_video
+    
+    upload_result = upload_video_to_abyss(video_to_upload)
     
     if upload_result and upload_result[0]:
         file_code, file_size = upload_result
-        
-        if srt_sub_path and os.path.exists(srt_sub_path):
-            jwt_token = get_abyss_token()
-            if jwt_token:
-                upload_subtitle_to_abyss_api(file_code, srt_sub_path, jwt_token)
+        if srt_sub_path and os.path.exists(srt_sub_path) and jwt_token:
+            upload_subtitle_to_abyss_api(file_code, srt_sub_path, jwt_token)
             
         update_database(file_code)
         notify_status("success", file_size)
-        print("🎉 WORKER COMPLETED SUCCESSFULLY!")
+        print("🎉 WORKER COMPLETED SUCCESSFULLY!", flush=True)
         sys.exit(0)
     else:
-        print("❌ Video Upload Failed!")
+        print("❌ Video Upload Failed!", flush=True)
         notify_status("failed", 0)
         sys.exit(1)
 else:
-    print("❌ Download Failed!")
+    print("❌ Download Failed!", flush=True)
     notify_status("failed", 0)
     sys.exit(1)
