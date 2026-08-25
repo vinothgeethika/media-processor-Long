@@ -54,7 +54,7 @@ search_type = payload.get("search_type")
 anime_title = payload.get("title", "Unknown Anime")
 
 safe_anime_title = re.sub(r'[\\/*?:"<>|]', "", anime_title).strip()
-print(f"🚀 [WORKER STARTED - V8 LONG BATCH] Anime: {safe_anime_title} | Ep: {ep_num}", flush=True)
+print(f"🚀 [WORKER STARTED - V8 LONG BATCH UPDATED] Anime: {safe_anime_title} | Ep: {ep_num}", flush=True)
 
 BASE_DIR = "downloads"
 TEMP_SUB_DIR = f"temp_subs_ep_{ep_num}"
@@ -70,18 +70,36 @@ def notify_status(status="failed", file_size=0):
         })
     except: pass
 
-def extract_ep_number(filename):
-    clean = re.sub(r'\[.*?\]|\(.*?\)', ' ', filename.lower())
-    clean = re.sub(r'\b(1080p|720p|480p|x264|x265|hevc|10bit|8bit)\b', ' ', clean)
-    m = re.search(r'[sS]\d+[eE]0*(\d+)', clean)
-    if m: return int(m.group(1))
-    m = re.search(r'\b(?:ep|episode)\.?\s?0*(\d+)\b', clean)
-    if m: return int(m.group(1))
-    m = re.search(r'\s-\s0*(\d+)(?:v\d)?\b', clean)
-    if m: return int(m.group(1))
-    m = re.search(r'\b0*(\d+)\b', clean)
-    if m: return int(m.group(1))
-    return None
+# ==========================================
+# 🧠 SMART FILTERING & EPISODE EXTRACTION
+# ==========================================
+def is_junk_file(filename):
+    """Junk ෆයිල් (OVA, Movies, Specials) හඳුනාගැනීම"""
+    f_lower = filename.lower()
+    junk_pattern = r'\b(movie|special|ova|ncop|nced|opening|ending|recap|preview|batch|log|digest|picture drama|sp\d*)\b'
+    if re.search(junk_pattern, f_lower): return True[cite: 2]
+    if "episode of" in f_lower: return True[cite: 2]
+    return False[cite: 2]
+
+def clean_filename(filename):
+    """අනවශ්‍ය කොටස් ඉවත් කර නම පිරිසිදු කිරීම"""
+    clean_name = filename.lower()
+    clean_name = re.sub(r'\[.*?\]', ' ', clean_name)[cite: 2]
+    clean_name = re.sub(r'\(.*?\)', ' ', clean_name)[cite: 2]
+    clean_name = re.sub(r'\b(1080p|720p|480p|x264|x265|h264|hevc|10bit|8bit)\b', ' ', clean_name)[cite: 2]
+    return clean_name[cite: 2]
+
+def extract_episode_number(filename):
+    """නිවැරදිව එපිසෝඩ් අංකය ලබාගැනීම"""
+    clean_name = clean_filename(filename)[cite: 2]
+    match = re.search(r'[sS]\d+[eE]0*(\d+)', clean_name)[cite: 2]
+    if match: return int(match.group(1))[cite: 2]
+    matches = re.findall(r'\s-\s0*(\d{1,4})(?:v\d)?\b', clean_name)[cite: 2]
+    if matches: return int(matches[0])[cite: 2]
+    match = re.search(r'\b(?:ep|episode)\.?\s?0*(\d+)\b', clean_name)[cite: 2]
+    if match: return int(match.group(1))[cite: 2]
+    return None[cite: 2]
+# ==========================================
 
 def detect_encoding(file_path):
     for enc in ['utf-8', 'utf-8-sig', 'latin-1', 'cp1252']:
@@ -164,12 +182,16 @@ def download_video():
             from torrentool.api import Torrent
             my_torrent = Torrent.from_file(torrent_files[0])
             target_idx = None
+            target_ep_int = int(ep_num)
             
-            # 🔥 Batch එකේ එපිසෝඩ් එක තියෙනවද චෙක් කරනවා
+            # 🔥 අලුත් ස්මාර්ට් ෆිල්ටර් ක්‍රමය භාවිතයෙන් එපිසෝඩ් එක සෙවීම
             for idx, f in enumerate(my_torrent.files, start=1):
-                if f.name.lower().endswith(('.mkv', '.mp4')) and extract_ep_number(os.path.basename(f.name)) == int(ep_num):
-                    target_idx = idx
-                    break
+                if any(f.name.lower().endswith(ext) for ext in ['.mkv', '.mp4']):[cite: 2]
+                    if not is_junk_file(f.name):[cite: 2]
+                        found_ep = extract_episode_number(os.path.basename(f.name))[cite: 2]
+                        if found_ep == target_ep_int:
+                            target_idx = idx
+                            break
             
             if target_idx:
                 subprocess.run(['aria2c', '--seed-time=0', f'--select-file={target_idx}', f'--dir={BASE_DIR}', timeout_arg, torrent_files[0]])
@@ -186,7 +208,7 @@ def download_video():
     target_ep_int = int(ep_num)
     for root, dirs, files in os.walk(BASE_DIR):
         for f in files:
-            if f.endswith(('.mkv', '.mp4')) and extract_ep_number(f) == target_ep_int:
+            if f.endswith(('.mkv', '.mp4')) and extract_episode_number(f) == target_ep_int:
                 return os.path.join(root, f)
     for root, dirs, files in os.walk(BASE_DIR):
         for f in files:
