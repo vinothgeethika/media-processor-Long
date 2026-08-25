@@ -42,7 +42,10 @@ fs_db = firestore.client()
 ABYSS_API_KEY = os.environ.get("ABYSS_API_KEY", "")
 ABYSS_EMAIL = os.environ.get("ABYSS_EMAIL", "")       
 ABYSS_PASSWORD = os.environ.get("ABYSS_PASSWORD", "") 
-RTDB_WORKER_FEEDBACK = "worker_job_status_short"
+
+# 🔥 වෙනස් කළ තැන: අලුත් Bot 2 Feedback Node එක
+RTDB_WORKER_FEEDBACK = "worker_job_status_long"
+
 ABYSS_UPLOAD_URL = f"https://up.abyss.to/{ABYSS_API_KEY}"
 
 payload = json.loads(os.environ.get("JOB_PAYLOAD", "{}"))
@@ -74,31 +77,28 @@ def notify_status(status="failed", file_size=0):
 # 🧠 SMART FILTERING & EPISODE EXTRACTION
 # ==========================================
 def is_junk_file(filename):
-    """Junk ෆයිල් (OVA, Movies, Specials) හඳුනාගැනීම"""
     f_lower = filename.lower()
     junk_pattern = r'\b(movie|special|ova|ncop|nced|opening|ending|recap|preview|batch|log|digest|picture drama|sp\d*)\b'
-    if re.search(junk_pattern, f_lower): return True[cite: 2]
-    if "episode of" in f_lower: return True[cite: 2]
-    return False[cite: 2]
+    if re.search(junk_pattern, f_lower): return True
+    if "episode of" in f_lower: return True
+    return False
 
 def clean_filename(filename):
-    """අනවශ්‍ය කොටස් ඉවත් කර නම පිරිසිදු කිරීම"""
     clean_name = filename.lower()
-    clean_name = re.sub(r'\[.*?\]', ' ', clean_name)[cite: 2]
-    clean_name = re.sub(r'\(.*?\)', ' ', clean_name)[cite: 2]
-    clean_name = re.sub(r'\b(1080p|720p|480p|x264|x265|h264|hevc|10bit|8bit)\b', ' ', clean_name)[cite: 2]
-    return clean_name[cite: 2]
+    clean_name = re.sub(r'\[.*?\]', ' ', clean_name)
+    clean_name = re.sub(r'\(.*?\)', ' ', clean_name)
+    clean_name = re.sub(r'\b(1080p|720p|480p|x264|x265|h264|hevc|10bit|8bit)\b', ' ', clean_name)
+    return clean_name
 
 def extract_episode_number(filename):
-    """නිවැරදිව එපිසෝඩ් අංකය ලබාගැනීම"""
-    clean_name = clean_filename(filename)[cite: 2]
-    match = re.search(r'[sS]\d+[eE]0*(\d+)', clean_name)[cite: 2]
-    if match: return int(match.group(1))[cite: 2]
-    matches = re.findall(r'\s-\s0*(\d{1,4})(?:v\d)?\b', clean_name)[cite: 2]
-    if matches: return int(matches[0])[cite: 2]
-    match = re.search(r'\b(?:ep|episode)\.?\s?0*(\d+)\b', clean_name)[cite: 2]
-    if match: return int(match.group(1))[cite: 2]
-    return None[cite: 2]
+    clean_name = clean_filename(filename)
+    match = re.search(r'[sS]\d+[eE]0*(\d+)', clean_name)
+    if match: return int(match.group(1))
+    matches = re.findall(r'\s-\s0*(\d{1,4})(?:v\d)?\b', clean_name)
+    if matches: return int(matches[0])
+    match = re.search(r'\b(?:ep|episode)\.?\s?0*(\d+)\b', clean_name)
+    if match: return int(match.group(1))
+    return None
 # ==========================================
 
 def detect_encoding(file_path):
@@ -133,7 +133,6 @@ WARP_PROXIES = {
     "http": "socks5://127.0.0.1:40000",
     "https": "socks5://127.0.0.1:40000"
 }
-LINGVA_SERVERS = ["https://lingva.ml", "https://lingva.lunar.icu", "https://translate.plausibility.cloud"]
 
 def translate_guaranteed_sinhala(text):
     if not text or len(text.strip()) == 0: return ""
@@ -184,11 +183,10 @@ def download_video():
             target_idx = None
             target_ep_int = int(ep_num)
             
-            # 🔥 අලුත් ස්මාර්ට් ෆිල්ටර් ක්‍රමය භාවිතයෙන් එපිසෝඩ් එක සෙවීම
             for idx, f in enumerate(my_torrent.files, start=1):
-                if any(f.name.lower().endswith(ext) for ext in ['.mkv', '.mp4']):[cite: 2]
-                    if not is_junk_file(f.name):[cite: 2]
-                        found_ep = extract_episode_number(os.path.basename(f.name))[cite: 2]
+                if any(f.name.lower().endswith(ext) for ext in ['.mkv', '.mp4']):
+                    if not is_junk_file(f.name):
+                        found_ep = extract_episode_number(os.path.basename(f.name))
                         if found_ep == target_ep_int:
                             target_idx = idx
                             break
@@ -196,12 +194,11 @@ def download_video():
             if target_idx:
                 subprocess.run(['aria2c', '--seed-time=0', f'--select-file={target_idx}', f'--dir={BASE_DIR}', timeout_arg, torrent_files[0]])
             else:
-                # 🛑 Batch එකේ එපිසෝඩ් එක නැත්නම් (උදා: Batch එක ඉවරයි), Bot 2 ට ඒක දැනුම් දෙනවා
                 print(f"🛑 Episode {ep_num} not found in this batch! Ending batch processing.", flush=True)
                 try:
                     db.reference(RTDB_WORKER_FEEDBACK).update({"status": "failed_batch_ended"})
                 except: pass
-                sys.exit(0) # Worker එක එතනින්ම නවත්වනවා!
+                sys.exit(0) 
     else:
         subprocess.run(['aria2c', '--seed-time=0', f'--dir={BASE_DIR}', timeout_arg, magnet])
 
