@@ -104,7 +104,6 @@ def extract_episode_number(filename):
     match = re.search(r'\b(?:ep|episode)\.?\s?0*(\d+)\b', clean_name)
     if match: return int(match.group(1))
     return None
-# ==========================================
 
 def detect_encoding(file_path):
     for enc in ['utf-8', 'utf-8-sig', 'latin-1', 'cp1252']:
@@ -385,7 +384,7 @@ def upload_subtitle_to_abyss_api(vhd_code, srt_path, token):
     except: pass
 
 # ==========================================
-# 🚀 අලුත් කෑල්ල: TELEGRAM UPLOAD FUNCTION (TELETHON METHOD)
+# 🚀 TELEGRAM UPLOAD FUNCTION (TELETHON METHOD)
 # ==========================================
 def upload_to_telegram(video_path, srt_path):
     if not all([TG_BOT_TOKEN, TG_DB_CHANNEL_ID, TG_API_ID, TG_API_HASH]):
@@ -396,17 +395,15 @@ def upload_to_telegram(video_path, srt_path):
     try:
         from telethon.sync import TelegramClient
         
-        # In-memory session එකක් හදලා connect වෙනවා
         client = TelegramClient('tg_uploader_session', int(TG_API_ID), TG_API_HASH)
         client.start(bot_token=TG_BOT_TOKEN)
         
-        # Channel එක හරියටම හොයාගන්නවා (Telethon වල මේක මාර ස්ථාවරයි)
         print("🔌 Resolving Channel Entity...", flush=True)
         channel_entity = client.get_entity(int(TG_DB_CHANNEL_ID))
         
-        caption = f"🎬 **{safe_anime_title} - Episode {ep_num}**\n\n🆔 `anime_{anime_id}_ep_{ep_num}`"
+        # 🎬 ලස්සන කරපු Caption එක (මේකෙ ID මුකුත් පේන්න නෑ)
+        caption = f"🎬 **{safe_anime_title} - Episode {ep_num}**"
         
-        # Video එක යවනවා
         print("🚀 Uploading Video File...", flush=True)
         msg = client.send_file(
             entity=channel_entity,
@@ -416,7 +413,6 @@ def upload_to_telegram(video_path, srt_path):
             supports_streaming=True
         )
         
-        # Subtitle එක යවනවා (Reply එකක් විදියට)
         if srt_path and os.path.exists(srt_path):
             print("🚀 Uploading Subtitle File...", flush=True)
             client.send_file(
@@ -440,7 +436,8 @@ def update_database(file_code, tg_msg_id=None):
     print("💾 Updating Firestore...", flush=True)
     ep_doc_id = f"episode_{int(ep_num):04d}" if str(ep_num).isdigit() else f"episode_{ep_num}"
     
-    deep_link_id = f"{anime_id}_{ep_num}"
+    # මේ ID එක සේව් කරන්නේ Database එකේ පිළිවෙලට තියාගන්න විතරයි
+    deep_link_id = f"{anime_id}-{ep_num}"
     
     data = {
         'status': 'uploaded',
@@ -479,12 +476,10 @@ if original_video:
         if srt_sub_path and os.path.exists(srt_sub_path) and jwt_token:
             upload_subtitle_to_abyss_api(file_code, srt_sub_path, jwt_token)
             
-        # 🚀 මෙතනින් තමයි Telegram එකට Upload වෙන්නේ 
         tg_msg_id = None
         if TG_BOT_TOKEN and TG_DB_CHANNEL_ID:
             tg_msg_id = upload_to_telegram(video_to_upload, srt_sub_path)
             
-        # Firestore එක Update කිරීම
         update_database(file_code, tg_msg_id)
         
         notify_status("success", file_size)
