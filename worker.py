@@ -62,7 +62,7 @@ search_type = payload.get("search_type")
 anime_title = payload.get("title", "Unknown Anime")
 
 safe_anime_title = re.sub(r'[\\/*?:"<>|]', "", anime_title).strip()
-print(f"🚀 [WORKER STARTED - V9 UPLOAD RETRY & PROGRESS] Anime: {safe_anime_title} | Ep: {ep_num}", flush=True)
+print(f"🚀 [WORKER STARTED - V10 UPLOAD RETRY (45M TIMEOUT)] Anime: {safe_anime_title} | Ep: {ep_num}", flush=True)
 
 BASE_DIR = "downloads"
 TEMP_SUB_DIR = f"temp_subs_ep_{ep_num}"
@@ -402,7 +402,6 @@ def upload_to_telegram(video_path, srt_path):
         last_printed_percent = [-1]
         def progress_callback(current, total):
             percent = int((current / total) * 100)
-            # 10% න් 10% ට ප්‍රින්ට් කරනවා, එතකොට ලොග් එක Spam වෙන්නේ නෑ
             if percent % 10 == 0 and percent != last_printed_percent[0]:
                 print(f"   📈 Telegram Upload Progress: {percent}%", flush=True)
                 last_printed_percent[0] = percent
@@ -440,8 +439,8 @@ def upload_to_telegram(video_path, srt_path):
                 msg = None
                 with concurrent.futures.ThreadPoolExecutor() as executor:
                     future = executor.submit(do_upload)
-                    # විනාඩි 15 ක උපරිම කාලයක් දෙනවා
-                    msg = future.result(timeout=900) 
+                    # 🚀 විනාඩි 45 ක (තත්පර 2700) උපරිම කාලයක් දෙනවා
+                    msg = future.result(timeout=2700) 
                 
                 # වීඩියෝ එක යැව්වා නම් සබ් එකත් යවනවා
                 if msg:
@@ -463,7 +462,7 @@ def upload_to_telegram(video_path, srt_path):
                     return msg.id
                     
             except concurrent.futures.TimeoutError:
-                print(f"❌ Telegram Upload HUNG! Timeout reached (15 mins) on Attempt {attempt}.", flush=True)
+                print(f"❌ Telegram Upload HUNG! Timeout reached (45 mins) on Attempt {attempt}.", flush=True)
                 try: client.disconnect()
                 except: pass
                 
@@ -539,7 +538,7 @@ if original_video:
         if TG_BOT_TOKEN and TG_DB_CHANNEL_ID:
             tg_msg_id = upload_to_telegram(video_to_upload, srt_sub_path)
             
-        # TG Upload එක Failed/Timeout වුණොත් Worker එක Fail කරලා නවත්තනවා (Bot 2 ට අල්ලගන්න)
+        # TG Upload එක Failed/Timeout වුණොත් Worker එක Fail කරලා නවත්තනවා
         if TG_BOT_TOKEN and TG_DB_CHANNEL_ID and not tg_msg_id:
             print("❌ Workflow Failed due to Telegram Upload Timeout or Error.", flush=True)
             notify_status("failed", 0)
