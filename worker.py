@@ -49,6 +49,7 @@ TG_DB_CHANNEL_ID = os.environ.get("TG_DB_CHANNEL_ID")
 TG_API_ID = os.environ.get("TG_API_ID")
 TG_API_HASH = os.environ.get("TG_API_HASH")
 
+# Bot 2 Database Node
 RTDB_WORKER_FEEDBACK = "worker_job_status_long"
 
 ABYSS_UPLOAD_URL = f"https://up.abyss.to/{ABYSS_API_KEY}"
@@ -62,7 +63,7 @@ search_type = payload.get("search_type")
 anime_title = payload.get("title", "Unknown Anime")
 
 safe_anime_title = re.sub(r'[\\/*?:"<>|]', "", anime_title).strip()
-print(f"🚀 [WORKER STARTED - V10 UPLOAD RETRY (45M TIMEOUT)] Anime: {safe_anime_title} | Ep: {ep_num}", flush=True)
+print(f"🚀 [WORKER STARTED - V11 LONG BATCH (ASYNC FIXED)] Anime: {safe_anime_title} | Ep: {ep_num}", flush=True)
 
 BASE_DIR = "downloads"
 TEMP_SUB_DIR = f"temp_subs_ep_{ep_num}"
@@ -384,7 +385,7 @@ def upload_subtitle_to_abyss_api(vhd_code, srt_path, token):
     except: pass
 
 # ==========================================
-# 🚀 TELEGRAM UPLOAD FUNCTION (WITH PROGRESS & RETRY LOGIC)
+# 🚀 TELEGRAM UPLOAD FUNCTION (FIXED ASYNCIO + PROGRESS)
 # ==========================================
 def upload_to_telegram(video_path, srt_path):
     if not all([TG_BOT_TOKEN, TG_DB_CHANNEL_ID, TG_API_ID, TG_API_HASH]):
@@ -395,10 +396,10 @@ def upload_to_telegram(video_path, srt_path):
     try:
         from telethon.sync import TelegramClient
         import concurrent.futures
+        import asyncio
         
         caption = f"🎬 **{safe_anime_title} - Episode {ep_num}**"
         
-        # 1. Upload Progress Bar Logic (GitHub Action Friendly)
         last_printed_percent = [-1]
         def progress_callback(current, total):
             percent = int((current / total) * 100)
@@ -411,9 +412,13 @@ def upload_to_telegram(video_path, srt_path):
         for attempt in range(1, MAX_RETRIES + 1):
             print(f"\n🚀 Telegram Upload Attempt {attempt}/{MAX_RETRIES}...", flush=True)
             
-            try:
-                # 2. අලුත් Session එකක් හදනවා හැම Attempt එකකදීම
-                session_name = f'tg_uploader_session_{anime_id}_{ep_num}'
+            session_name = f'tg_uploader_session_long_{anime_id}_{ep_num}_{attempt}'
+            
+            def do_upload():
+                # 🛑 ERROR FIX: Set a new event loop for this background thread
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                
                 client = TelegramClient(
                     session_name, 
                     int(TG_API_ID), 
@@ -425,64 +430,50 @@ def upload_to_telegram(video_path, srt_path):
                 client.start(bot_token=TG_BOT_TOKEN)
                 channel_entity = client.get_entity(int(TG_DB_CHANNEL_ID))
                 
-                def do_upload():
-                    last_printed_percent[0] = -1 # පටන් ගද්දි Progress එක රීසෙට් කරනවා
-                    return client.send_file(
+                last_printed_percent[0] = -1 
+                
+                print("🚀 Uploading Video File...", flush=True)
+                msg = client.send_file(
+                    entity=channel_entity,
+                    file=video_path,
+                    caption=caption,
+                    force_document=False,
+                    supports_streaming=True,
+                    progress_callback=progress_callback
+                )
+                
+                if msg and srt_path and os.path.exists(srt_path):
+                    print("🚀 Uploading Subtitle File...", flush=True)
+                    client.send_file(
                         entity=channel_entity,
-                        file=video_path,
-                        caption=caption,
-                        force_document=False,
-                        supports_streaming=True,
-                        progress_callback=progress_callback
+                        file=srt_path,
+                        reply_to=msg.id
                     )
+                    
+                client.disconnect()
+                return msg.id
+            
+            msg_id = None
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                future = executor.submit(do_upload)
+                try:
+                    msg_id = future.result(timeout=2700) # 45 minutes
+                except concurrent.futures.TimeoutError:
+                    print(f"❌ Telegram Upload HUNG! Timeout reached (45 mins) on Attempt {attempt}.", flush=True)
+            
+            try:
+                os.remove(f"{session_name}.session")
+            except: pass
+            
+            if msg_id:
+                print(f"✅ Telegram Upload Success! Message ID: {msg_id}", flush=True)
+                return msg_id
+            
+            if attempt < MAX_RETRIES:
+                print("🔄 Retrying in 10 seconds...", flush=True)
+                time.sleep(10)
                 
-                msg = None
-                with concurrent.futures.ThreadPoolExecutor() as executor:
-                    future = executor.submit(do_upload)
-                    # 🚀 විනාඩි 45 ක (තත්පර 2700) උපරිම කාලයක් දෙනවා
-                    msg = future.result(timeout=2700) 
-                
-                # වීඩියෝ එක යැව්වා නම් සබ් එකත් යවනවා
-                if msg:
-                    if srt_path and os.path.exists(srt_path):
-                        print("🚀 Uploading Subtitle File...", flush=True)
-                        client.send_file(
-                            entity=channel_entity,
-                            file=srt_path,
-                            reply_to=msg.id
-                        )
-                    print(f"✅ Telegram Upload Success! Message ID: {msg.id}", flush=True)
-                    client.disconnect()
-                    
-                    # Session එක වැඩේ ඉවර වුණාම මකලා දානවා (Space ඉතුරු වෙන්න)
-                    try:
-                        os.remove(f"{session_name}.session")
-                    except: pass
-                    
-                    return msg.id
-                    
-            except concurrent.futures.TimeoutError:
-                print(f"❌ Telegram Upload HUNG! Timeout reached (45 mins) on Attempt {attempt}.", flush=True)
-                try: client.disconnect()
-                except: pass
-                
-                if attempt < MAX_RETRIES:
-                    print("🔄 Retrying in 10 seconds...", flush=True)
-                    time.sleep(10)
-                else:
-                    print("❌ All upload attempts failed due to timeouts.", flush=True)
-                    return None
-                    
-            except Exception as loop_e:
-                print(f"❌ Telegram Upload Error during Attempt {attempt}: {loop_e}", flush=True)
-                try: client.disconnect()
-                except: pass
-                
-                if attempt < MAX_RETRIES:
-                    time.sleep(10)
-                else:
-                    return None
-                    
+        print("❌ All upload attempts failed.", flush=True)
         return None
             
     except Exception as e:
@@ -538,7 +529,6 @@ if original_video:
         if TG_BOT_TOKEN and TG_DB_CHANNEL_ID:
             tg_msg_id = upload_to_telegram(video_to_upload, srt_sub_path)
             
-        # TG Upload එක Failed/Timeout වුණොත් Worker එක Fail කරලා නවත්තනවා
         if TG_BOT_TOKEN and TG_DB_CHANNEL_ID and not tg_msg_id:
             print("❌ Workflow Failed due to Telegram Upload Timeout or Error.", flush=True)
             notify_status("failed", 0)
