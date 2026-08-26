@@ -63,7 +63,7 @@ search_type = payload.get("search_type")
 anime_title = payload.get("title", "Unknown Anime")
 
 safe_anime_title = re.sub(r'[\\/*?:"<>|]', "", anime_title).strip()
-print(f"🚀 [WORKER STARTED - V11 LONG BATCH (ASYNC FIXED)] Anime: {safe_anime_title} | Ep: {ep_num}", flush=True)
+print(f"🚀 [WORKER STARTED - V12 DUAL-AUDIO FILTER] Anime: {safe_anime_title} | Ep: {ep_num}", flush=True)
 
 BASE_DIR = "downloads"
 TEMP_SUB_DIR = f"temp_subs_ep_{ep_num}"
@@ -512,10 +512,52 @@ if original_video:
     srt_sub_path = process_and_translate_subtitle(original_video)
     jwt_token = get_abyss_token()
     
-    print("✂️ Removing existing internal subtitles from video...", flush=True)
+    print("✂️ Processing Dual-Audio & removing internal subtitles...", flush=True)
     original_filename = os.path.basename(original_video)
     clean_video = os.path.join(TEMP_SUB_DIR, original_filename)
-    subprocess.run(['ffmpeg', '-i', original_video, '-c', 'copy', '-sn', clean_video, '-y'], stderr=subprocess.DEVNULL)
+    
+    # 🔥 අලුත් DUAL-AUDIO ලොජික් එක
+    try:
+        # වීඩියෝ එකේ තියෙන Audio Streams ඔක්කොම ස්කෑන් කරනවා
+        probe_cmd = ['ffprobe', '-v', 'error', '-select_streams', 'a', '-show_entries', 'stream=index:stream_tags=language', '-of', 'json', original_video]
+        probe_res = subprocess.run(probe_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        audio_streams = json.loads(probe_res.stdout).get('streams', [])
+        
+        audio_map = ['-map', '0:a?'] # Default: ඔක්කොම ගන්නවා
+        
+        if len(audio_streams) > 1:
+            print(f"🔊 Dual-Audio detected! ({len(audio_streams)} audio tracks). Finding Japanese track...", flush=True)
+            jpn_index = None
+            non_eng_index = None
+            
+            for s in audio_streams:
+                lang = s.get('tags', {}).get('language', '').lower()
+                # ජැපනීස් ද කියලා බලනවා
+                if lang in ['ja', 'jpn', 'japanese']:
+                    jpn_index = s['index']
+                    break
+                # English නෙවෙයි නම් ඒකත් අරන් තියාගන්නවා (Fallback එකක් විදිහට)
+                if lang not in ['en', 'eng', 'english'] and non_eng_index is None:
+                    non_eng_index = s['index']
+            
+            # ගැලපෙන Track එක තෝරනවා
+            if jpn_index is not None:
+                audio_map = ['-map', f'0:{jpn_index}']
+            elif non_eng_index is not None:
+                audio_map = ['-map', f'0:{non_eng_index}']
+            else:
+                audio_map = ['-map', '0:a:0']
+        else:
+            audio_map = ['-map', '0:a:0?']
+            
+        # Main Video එකයි, තෝරගත්ත Audio එකයි විතරක් අරන් Subtitles කපලා දානවා
+        ff_cmd = ['ffmpeg', '-i', original_video, '-map', '0:v:0'] + audio_map + ['-c', 'copy', '-sn', clean_video, '-y']
+        subprocess.run(ff_cmd, stderr=subprocess.DEVNULL)
+        
+    except Exception as e:
+        print(f"⚠️ Audio parsing failed, falling back to basic cleanup...", flush=True)
+        subprocess.run(['ffmpeg', '-i', original_video, '-c', 'copy', '-sn', clean_video, '-y'], stderr=subprocess.DEVNULL)
+
     video_to_upload = clean_video if os.path.exists(clean_video) else original_video
     
     upload_result = upload_video_to_abyss(video_to_upload)
