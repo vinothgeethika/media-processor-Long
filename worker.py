@@ -43,16 +43,16 @@ ABYSS_API_KEY = os.environ.get("ABYSS_API_KEY", "")
 ABYSS_EMAIL = os.environ.get("ABYSS_EMAIL", "")       
 ABYSS_PASSWORD = os.environ.get("ABYSS_PASSWORD", "") 
 
+# Bot 2 Database Node
+RTDB_WORKER_FEEDBACK = "worker_job_status_long"
+
+ABYSS_UPLOAD_URL = f"https://up.abyss.to/{ABYSS_API_KEY}"
+
 # Telegram Credentials
 TG_BOT_TOKEN = os.environ.get("TG_BOT_TOKEN")
 TG_DB_CHANNEL_ID = os.environ.get("TG_DB_CHANNEL_ID")
 TG_API_ID = os.environ.get("TG_API_ID")
 TG_API_HASH = os.environ.get("TG_API_HASH")
-
-# Bot 2 Database Node
-RTDB_WORKER_FEEDBACK = "worker_job_status_long"
-
-ABYSS_UPLOAD_URL = f"https://up.abyss.to/{ABYSS_API_KEY}"
 
 payload = json.loads(os.environ.get("JOB_PAYLOAD", "{}"))
 anime_id = payload.get("anilist_id")
@@ -63,7 +63,7 @@ search_type = payload.get("search_type")
 anime_title = payload.get("title", "Unknown Anime")
 
 safe_anime_title = re.sub(r'[\\/*?:"<>|]', "", anime_title).strip()
-print(f"🚀 [WORKER STARTED - V12 DUAL-AUDIO FILTER] Anime: {safe_anime_title} | Ep: {ep_num}", flush=True)
+print(f"🚀 [WORKER STARTED - V13 BOT-2 BATCH DUAL AUDIO SMART] Anime: {safe_anime_title} | Ep: {ep_num}", flush=True)
 
 BASE_DIR = "downloads"
 TEMP_SUB_DIR = f"temp_subs_ep_{ep_num}"
@@ -385,7 +385,7 @@ def upload_subtitle_to_abyss_api(vhd_code, srt_path, token):
     except: pass
 
 # ==========================================
-# 🚀 TELEGRAM UPLOAD FUNCTION (FIXED ASYNCIO + PROGRESS)
+# 🚀 TELEGRAM UPLOAD FUNCTION
 # ==========================================
 def upload_to_telegram(video_path, srt_path):
     if not all([TG_BOT_TOKEN, TG_DB_CHANNEL_ID, TG_API_ID, TG_API_HASH]):
@@ -415,40 +415,21 @@ def upload_to_telegram(video_path, srt_path):
             session_name = f'tg_uploader_session_long_{anime_id}_{ep_num}_{attempt}'
             
             def do_upload():
-                # 🛑 ERROR FIX: Set a new event loop for this background thread
                 loop = asyncio.new_event_loop()
                 asyncio.set_event_loop(loop)
                 
-                client = TelegramClient(
-                    session_name, 
-                    int(TG_API_ID), 
-                    TG_API_HASH,
-                    request_retries=3,
-                    connection_retries=3,
-                    timeout=60
-                )
+                client = TelegramClient(session_name, int(TG_API_ID), TG_API_HASH, request_retries=3, connection_retries=3, timeout=60)
                 client.start(bot_token=TG_BOT_TOKEN)
                 channel_entity = client.get_entity(int(TG_DB_CHANNEL_ID))
                 
                 last_printed_percent[0] = -1 
                 
                 print("🚀 Uploading Video File...", flush=True)
-                msg = client.send_file(
-                    entity=channel_entity,
-                    file=video_path,
-                    caption=caption,
-                    force_document=False,
-                    supports_streaming=True,
-                    progress_callback=progress_callback
-                )
+                msg = client.send_file(entity=channel_entity, file=video_path, caption=caption, force_document=False, supports_streaming=True, progress_callback=progress_callback)
                 
                 if msg and srt_path and os.path.exists(srt_path):
                     print("🚀 Uploading Subtitle File...", flush=True)
-                    client.send_file(
-                        entity=channel_entity,
-                        file=srt_path,
-                        reply_to=msg.id
-                    )
+                    client.send_file(entity=channel_entity, file=srt_path, reply_to=msg.id)
                     
                 client.disconnect()
                 return msg.id
@@ -456,13 +437,11 @@ def upload_to_telegram(video_path, srt_path):
             msg_id = None
             with concurrent.futures.ThreadPoolExecutor() as executor:
                 future = executor.submit(do_upload)
-                try:
-                    msg_id = future.result(timeout=2700) # 45 minutes
+                try: msg_id = future.result(timeout=2700) 
                 except concurrent.futures.TimeoutError:
-                    print(f"❌ Telegram Upload HUNG! Timeout reached (45 mins) on Attempt {attempt}.", flush=True)
+                    print(f"❌ Telegram Upload HUNG! Timeout reached on Attempt {attempt}.", flush=True)
             
-            try:
-                os.remove(f"{session_name}.session")
+            try: os.remove(f"{session_name}.session")
             except: pass
             
             if msg_id:
@@ -490,18 +469,12 @@ def update_database(file_code, tg_msg_id=None):
     
     data = {
         'status': 'uploaded',
-        'links': {
-            'abyss_video_id': file_code, 
-            'abyss_embed': f"https://abyss.to/embed/{file_code}"
-        },
+        'links': {'abyss_video_id': file_code, 'abyss_embed': f"https://abyss.to/embed/{file_code}"},
         'last_updated': firestore.SERVER_TIMESTAMP
     }
     
     if tg_msg_id:
-        data['telegram'] = {
-            'message_id': tg_msg_id,
-            'deep_link_id': deep_link_id
-        }
+        data['telegram'] = {'message_id': tg_msg_id, 'deep_link_id': deep_link_id}
         
     fs_db.collection('anime_series').document(str(anime_id)).collection('episodes').document(ep_doc_id).set(data, merge=True)
 
@@ -516,14 +489,13 @@ if original_video:
     original_filename = os.path.basename(original_video)
     clean_video = os.path.join(TEMP_SUB_DIR, original_filename)
     
-    # 🔥 අලුත් DUAL-AUDIO ලොජික් එක
+    # 🔥 DUAL-AUDIO SMART LOGIC (Language Code + Title Check)
     try:
-        # වීඩියෝ එකේ තියෙන Audio Streams ඔක්කොම ස්කෑන් කරනවා
-        probe_cmd = ['ffprobe', '-v', 'error', '-select_streams', 'a', '-show_entries', 'stream=index:stream_tags=language', '-of', 'json', original_video]
+        probe_cmd = ['ffprobe', '-v', 'error', '-select_streams', 'a', '-show_entries', 'stream=index:stream_tags=language:stream_tags=title', '-of', 'json', original_video]
         probe_res = subprocess.run(probe_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         audio_streams = json.loads(probe_res.stdout).get('streams', [])
         
-        audio_map = ['-map', '0:a?'] # Default: ඔක්කොම ගන්නවා
+        audio_map = ['-map', '0:a?'] 
         
         if len(audio_streams) > 1:
             print(f"🔊 Dual-Audio detected! ({len(audio_streams)} audio tracks). Finding Japanese track...", flush=True)
@@ -532,15 +504,17 @@ if original_video:
             
             for s in audio_streams:
                 lang = s.get('tags', {}).get('language', '').lower()
-                # ජැපනීස් ද කියලා බලනවා
-                if lang in ['ja', 'jpn', 'japanese']:
+                title = s.get('tags', {}).get('title', '').lower()
+                
+                # 🔥 ජැපනීස් ද කියලා බලනවා
+                if lang in ['ja', 'jpn', 'japanese'] or 'japanese' in title or '日本語' in title or 'nihongo' in title:
                     jpn_index = s['index']
                     break
-                # English නෙවෙයි නම් ඒකත් අරන් තියාගන්නවා (Fallback එකක් විදිහට)
-                if lang not in ['en', 'eng', 'english'] and non_eng_index is None:
+                
+                # English නෙවෙයි නම් ඒකත් අරන් තියාගන්නවා (Fallback)
+                if lang not in ['en', 'eng', 'english'] and 'english' not in title and non_eng_index is None:
                     non_eng_index = s['index']
             
-            # ගැලපෙන Track එක තෝරනවා
             if jpn_index is not None:
                 audio_map = ['-map', f'0:{jpn_index}']
             elif non_eng_index is not None:
@@ -550,7 +524,6 @@ if original_video:
         else:
             audio_map = ['-map', '0:a:0?']
             
-        # Main Video එකයි, තෝරගත්ත Audio එකයි විතරක් අරන් Subtitles කපලා දානවා
         ff_cmd = ['ffmpeg', '-i', original_video, '-map', '0:v:0'] + audio_map + ['-c', 'copy', '-sn', clean_video, '-y']
         subprocess.run(ff_cmd, stderr=subprocess.DEVNULL)
         
@@ -559,7 +532,6 @@ if original_video:
         subprocess.run(['ffmpeg', '-i', original_video, '-c', 'copy', '-sn', clean_video, '-y'], stderr=subprocess.DEVNULL)
 
     video_to_upload = clean_video if os.path.exists(clean_video) else original_video
-    
     upload_result = upload_video_to_abyss(video_to_upload)
     
     if upload_result and upload_result[0]:
@@ -577,7 +549,6 @@ if original_video:
             sys.exit(1)
             
         update_database(file_code, tg_msg_id)
-        
         notify_status("success", file_size)
         print("🎉 WORKER COMPLETED SUCCESSFULLY!", flush=True)
         sys.exit(0)
