@@ -385,7 +385,7 @@ def upload_subtitle_to_abyss_api(vhd_code, srt_path, token):
     except: pass
 
 # ==========================================
-# 🚀 අලුත් කෑල්ල: TELEGRAM UPLOAD FUNCTION
+# 🚀 TELEGRAM UPLOAD FUNCTION (WITH CONNECTION FIX)
 # ==========================================
 def upload_to_telegram(video_path, srt_path):
     if not all([TG_BOT_TOKEN, TG_DB_CHANNEL_ID, TG_API_ID, TG_API_HASH]):
@@ -400,6 +400,17 @@ def upload_to_telegram(video_path, srt_path):
         app = Client("tg_uploader", api_id=int(TG_API_ID), api_hash=TG_API_HASH, bot_token=TG_BOT_TOKEN, in_memory=True)
         
         with app:
+            # 1. 🛑 FIX: Peer ID අවුල මඟහරින්න මුලින්ම Message එකක් දාලා බලනවා
+            try:
+                print("🔌 Trying to establish Telegram connection...", flush=True)
+                init_msg = app.send_message(chat_id=int(TG_DB_CHANNEL_ID), text="⏳ Uploading new episode...")
+                # සාර්ථක වුණොත් ඒ මැසේජ් එක මකලා දානවා (අනවශ්‍ය නිසා)
+                app.delete_messages(chat_id=int(TG_DB_CHANNEL_ID), message_ids=init_msg.id)
+            except Exception as conn_err:
+                print(f"❌ Connection Error (Check if Bot is Admin & Channel ID is correct): {conn_err}", flush=True)
+                return None
+
+            # 2. Connection එක හරි නම් Video එක යවනවා
             caption = f"🎬 **{safe_anime_title} - Episode {ep_num}**\n\n🆔 `anime_{anime_id}_ep_{ep_num}`"
             
             # Video එක යැවීම
