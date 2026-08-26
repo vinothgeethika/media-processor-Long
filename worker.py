@@ -43,7 +43,12 @@ ABYSS_API_KEY = os.environ.get("ABYSS_API_KEY", "")
 ABYSS_EMAIL = os.environ.get("ABYSS_EMAIL", "")       
 ABYSS_PASSWORD = os.environ.get("ABYSS_PASSWORD", "") 
 
-# 🔥 වෙනස් කළ තැන: අලුත් Bot 2 Feedback Node එක
+# Telegram Credentials
+TG_BOT_TOKEN = os.environ.get("TG_BOT_TOKEN")
+TG_DB_CHANNEL_ID = os.environ.get("TG_DB_CHANNEL_ID")
+TG_API_ID = os.environ.get("TG_API_ID")
+TG_API_HASH = os.environ.get("TG_API_HASH")
+
 RTDB_WORKER_FEEDBACK = "worker_job_status_long"
 
 ABYSS_UPLOAD_URL = f"https://up.abyss.to/{ABYSS_API_KEY}"
@@ -379,14 +384,74 @@ def upload_subtitle_to_abyss_api(vhd_code, srt_path, token):
         if resp.status_code == 200: print("🎉 Subtitle Attached Successfully!", flush=True)
     except: pass
 
-def update_database(file_code):
+# ==========================================
+# 🚀 අලුත් කෑල්ල: TELEGRAM UPLOAD FUNCTION
+# ==========================================
+def upload_to_telegram(video_path, srt_path):
+    if not all([TG_BOT_TOKEN, TG_DB_CHANNEL_ID, TG_API_ID, TG_API_HASH]):
+        print("⚠️ Telegram credentials missing. Skipping Telegram upload.", flush=True)
+        return None
+        
+    print("📤 Uploading to Telegram Database Channel...", flush=True)
+    try:
+        from pyrogram import Client
+        
+        # in_memory=True යෙදීමෙන් සර්වර් එකේ අනවශ්‍ය session ෆයිල් සෑදෙන්නේ නැත
+        app = Client("tg_uploader", api_id=int(TG_API_ID), api_hash=TG_API_HASH, bot_token=TG_BOT_TOKEN, in_memory=True)
+        
+        with app:
+            caption = f"🎬 **{safe_anime_title} - Episode {ep_num}**\n\n🆔 `anime_{anime_id}_ep_{ep_num}`"
+            
+            # Video එක යැවීම
+            msg = app.send_video(
+                chat_id=int(TG_DB_CHANNEL_ID),
+                video=video_path,
+                caption=caption,
+                file_name=f"{safe_anime_title}_Ep_{ep_num}.mp4"
+            )
+            
+            # Subtitle එක යැවීම (Video එකට Reply එකක් විදියට)
+            if srt_path and os.path.exists(srt_path):
+                app.send_document(
+                    chat_id=int(TG_DB_CHANNEL_ID),
+                    document=srt_path,
+                    reply_to_message_id=msg.id
+                )
+            
+            print(f"✅ Telegram Upload Success! Message ID: {msg.id}", flush=True)
+            return msg.id
+            
+    except Exception as e:
+        print(f"❌ Telegram Upload Error: {e}", flush=True)
+        return None
+
+# ==========================================
+# 💾 FIRESTORE UPDATE වෙනස් කළ කෑල්ල
+# ==========================================
+def update_database(file_code, tg_msg_id=None):
     print("💾 Updating Firestore...", flush=True)
     ep_doc_id = f"episode_{int(ep_num):04d}" if str(ep_num).isdigit() else f"episode_{ep_num}"
-    fs_db.collection('anime_series').document(str(anime_id)).collection('episodes').document(ep_doc_id).set({
+    
+    # Deep Link එකට අවශ්‍ය අගය (උදා: 21_50)
+    deep_link_id = f"{anime_id}_{ep_num}"
+    
+    data = {
         'status': 'uploaded',
-        'links': {'abyss_video_id': file_code, 'abyss_embed': f"https://abyss.to/embed/{file_code}"},
+        'links': {
+            'abyss_video_id': file_code, 
+            'abyss_embed': f"https://abyss.to/embed/{file_code}"
+        },
         'last_updated': firestore.SERVER_TIMESTAMP
-    }, merge=True)
+    }
+    
+    # Telegram Message ID එක Firestore එකට එකතු කිරීම
+    if tg_msg_id:
+        data['telegram'] = {
+            'message_id': tg_msg_id,
+            'deep_link_id': deep_link_id
+        }
+        
+    fs_db.collection('anime_series').document(str(anime_id)).collection('episodes').document(ep_doc_id).set(data, merge=True)
 
 # --- MAIN EXECUTION ---
 original_video = download_video()
@@ -408,7 +473,14 @@ if original_video:
         if srt_sub_path and os.path.exists(srt_sub_path) and jwt_token:
             upload_subtitle_to_abyss_api(file_code, srt_sub_path, jwt_token)
             
-        update_database(file_code)
+        # 🚀 මෙතනින් තමයි Telegram එකට Upload වෙන්නේ 
+        tg_msg_id = None
+        if TG_BOT_TOKEN and TG_DB_CHANNEL_ID:
+            tg_msg_id = upload_to_telegram(video_to_upload, srt_sub_path)
+            
+        # Firestore එක Update කිරීම
+        update_database(file_code, tg_msg_id)
+        
         notify_status("success", file_size)
         print("🎉 WORKER COMPLETED SUCCESSFULLY!", flush=True)
         sys.exit(0)
