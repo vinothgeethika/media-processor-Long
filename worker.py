@@ -384,67 +384,62 @@ def upload_subtitle_to_abyss_api(vhd_code, srt_path, token):
         if resp.status_code == 200: print("🎉 Subtitle Attached Successfully!", flush=True)
     except: pass
 
-
 # ==========================================
-# 🚀 අලුත් කෑල්ල: TELEGRAM UPLOAD FUNCTION (100% FIXED)
+# 🚀 අලුත් කෑල්ල: TELEGRAM UPLOAD FUNCTION (TELETHON METHOD)
 # ==========================================
 def upload_to_telegram(video_path, srt_path):
     if not all([TG_BOT_TOKEN, TG_DB_CHANNEL_ID, TG_API_ID, TG_API_HASH]):
         print("⚠️ Telegram credentials missing. Skipping Telegram upload.", flush=True)
         return None
         
-    print("📤 Uploading to Telegram Database Channel...", flush=True)
+    print("📤 Uploading to Telegram Database Channel via Telethon...", flush=True)
     try:
-        from pyrogram import Client
+        from telethon.sync import TelegramClient
         
-        # in_memory=True යෙදීමෙන් සර්වර් එකේ අනවශ්‍ය session ෆයිල් සෑදෙන්නේ නැත
-        app = Client("tg_uploader", api_id=int(TG_API_ID), api_hash=TG_API_HASH, bot_token=TG_BOT_TOKEN, in_memory=True)
+        # In-memory session එකක් හදලා connect වෙනවා
+        client = TelegramClient('tg_uploader_session', int(TG_API_ID), TG_API_HASH)
+        client.start(bot_token=TG_BOT_TOKEN)
         
-        with app:
-            chat_id = int(TG_DB_CHANNEL_ID)
-            
-            # 🛑 FIX: Pyrogram වලට චැනල් එක අනිවාර්යයෙන්ම cache කරගන්න කියලා බල කරනවා (Peer ID error එක එන්නේ නැති වෙන්න)
-            try:
-                print("🔌 Caching Telegram channel peer...", flush=True)
-                app.get_chat(chat_id)
-            except Exception as peer_err:
-                print(f"⚠️ Peer Cache Warning: {peer_err}", flush=True)
-
-            caption = f"🎬 **{safe_anime_title} - Episode {ep_num}**\n\n🆔 `anime_{anime_id}_ep_{ep_num}`"
-            
-            # Video එක යැවීම
-            print("🚀 Uploading Video File...", flush=True)
-            msg = app.send_video(
-                chat_id=chat_id,
-                video=video_path,
-                caption=caption,
-                file_name=f"{safe_anime_title}_Ep_{ep_num}.mp4"
+        # Channel එක හරියටම හොයාගන්නවා (Telethon වල මේක මාර ස්ථාවරයි)
+        print("🔌 Resolving Channel Entity...", flush=True)
+        channel_entity = client.get_entity(int(TG_DB_CHANNEL_ID))
+        
+        caption = f"🎬 **{safe_anime_title} - Episode {ep_num}**\n\n🆔 `anime_{anime_id}_ep_{ep_num}`"
+        
+        # Video එක යවනවා
+        print("🚀 Uploading Video File...", flush=True)
+        msg = client.send_file(
+            entity=channel_entity,
+            file=video_path,
+            caption=caption,
+            force_document=False,
+            supports_streaming=True
+        )
+        
+        # Subtitle එක යවනවා (Reply එකක් විදියට)
+        if srt_path and os.path.exists(srt_path):
+            print("🚀 Uploading Subtitle File...", flush=True)
+            client.send_file(
+                entity=channel_entity,
+                file=srt_path,
+                reply_to=msg.id
             )
             
-            # Subtitle එක යැවීම (Video එකට Reply එකක් විදියට)
-            if srt_path and os.path.exists(srt_path):
-                print("🚀 Uploading Subtitle File...", flush=True)
-                app.send_document(
-                    chat_id=chat_id,
-                    document=srt_path,
-                    reply_to_message_id=msg.id
-                )
-            
-            print(f"✅ Telegram Upload Success! Message ID: {msg.id}", flush=True)
-            return msg.id
+        print(f"✅ Telegram Upload Success! Message ID: {msg.id}", flush=True)
+        client.disconnect()
+        return msg.id
             
     except Exception as e:
-        print(f"❌ Telegram Upload Error: {e}", flush=True)
+        print(f"❌ Telegram Upload Error (Telethon): {e}", flush=True)
         return None
 
 # ==========================================
-# 💾 FIRESTORE UPDATE වෙනස් කළ කෑල්ල
+# 💾 FIRESTORE UPDATE
 # ==========================================
 def update_database(file_code, tg_msg_id=None):
     print("💾 Updating Firestore...", flush=True)
     ep_doc_id = f"episode_{int(ep_num):04d}" if str(ep_num).isdigit() else f"episode_{ep_num}"
     
-    # Deep Link එකට අවශ්‍ය අගය (උදා: 21_50)
     deep_link_id = f"{anime_id}_{ep_num}"
     
     data = {
@@ -456,7 +451,6 @@ def update_database(file_code, tg_msg_id=None):
         'last_updated': firestore.SERVER_TIMESTAMP
     }
     
-    # Telegram Message ID එක Firestore එකට එකතු කිරීම
     if tg_msg_id:
         data['telegram'] = {
             'message_id': tg_msg_id,
