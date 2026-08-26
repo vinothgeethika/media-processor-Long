@@ -384,8 +384,9 @@ def upload_subtitle_to_abyss_api(vhd_code, srt_path, token):
         if resp.status_code == 200: print("🎉 Subtitle Attached Successfully!", flush=True)
     except: pass
 
+
 # ==========================================
-# 🚀 TELEGRAM UPLOAD FUNCTION (WITH CONNECTION FIX)
+# 🚀 අලුත් කෑල්ල: TELEGRAM UPLOAD FUNCTION (100% FIXED)
 # ==========================================
 def upload_to_telegram(video_path, srt_path):
     if not all([TG_BOT_TOKEN, TG_DB_CHANNEL_ID, TG_API_ID, TG_API_HASH]):
@@ -400,22 +401,21 @@ def upload_to_telegram(video_path, srt_path):
         app = Client("tg_uploader", api_id=int(TG_API_ID), api_hash=TG_API_HASH, bot_token=TG_BOT_TOKEN, in_memory=True)
         
         with app:
-            # 1. 🛑 FIX: Peer ID අවුල මඟහරින්න මුලින්ම Message එකක් දාලා බලනවා
+            chat_id = int(TG_DB_CHANNEL_ID)
+            
+            # 🛑 FIX: Pyrogram වලට චැනල් එක අනිවාර්යයෙන්ම cache කරගන්න කියලා බල කරනවා (Peer ID error එක එන්නේ නැති වෙන්න)
             try:
-                print("🔌 Trying to establish Telegram connection...", flush=True)
-                init_msg = app.send_message(chat_id=int(TG_DB_CHANNEL_ID), text="⏳ Uploading new episode...")
-                # සාර්ථක වුණොත් ඒ මැසේජ් එක මකලා දානවා (අනවශ්‍ය නිසා)
-                app.delete_messages(chat_id=int(TG_DB_CHANNEL_ID), message_ids=init_msg.id)
-            except Exception as conn_err:
-                print(f"❌ Connection Error (Check if Bot is Admin & Channel ID is correct): {conn_err}", flush=True)
-                return None
+                print("🔌 Caching Telegram channel peer...", flush=True)
+                app.get_chat(chat_id)
+            except Exception as peer_err:
+                print(f"⚠️ Peer Cache Warning: {peer_err}", flush=True)
 
-            # 2. Connection එක හරි නම් Video එක යවනවා
             caption = f"🎬 **{safe_anime_title} - Episode {ep_num}**\n\n🆔 `anime_{anime_id}_ep_{ep_num}`"
             
             # Video එක යැවීම
+            print("🚀 Uploading Video File...", flush=True)
             msg = app.send_video(
-                chat_id=int(TG_DB_CHANNEL_ID),
+                chat_id=chat_id,
                 video=video_path,
                 caption=caption,
                 file_name=f"{safe_anime_title}_Ep_{ep_num}.mp4"
@@ -423,8 +423,9 @@ def upload_to_telegram(video_path, srt_path):
             
             # Subtitle එක යැවීම (Video එකට Reply එකක් විදියට)
             if srt_path and os.path.exists(srt_path):
+                print("🚀 Uploading Subtitle File...", flush=True)
                 app.send_document(
-                    chat_id=int(TG_DB_CHANNEL_ID),
+                    chat_id=chat_id,
                     document=srt_path,
                     reply_to_message_id=msg.id
                 )
