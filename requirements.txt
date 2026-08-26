@@ -5,3 +5,5 @@ pysubs2
 deep-translator
 requests-toolbelt
 torrentool
+pyrogram
+TgCrypto
