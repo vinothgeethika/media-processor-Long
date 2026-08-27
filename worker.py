@@ -13,7 +13,6 @@ from requests_toolbelt.multipart.encoder import MultipartEncoder
 from faster_whisper import WhisperModel
 import urllib.parse
 import concurrent.futures
-import random
 from deep_translator import GoogleTranslator
 
 # --- 🗣️ SPOKEN SINHALA DICTIONARY ---
@@ -44,7 +43,7 @@ ABYSS_API_KEY = os.environ.get("ABYSS_API_KEY", "")
 ABYSS_EMAIL = os.environ.get("ABYSS_EMAIL", "")       
 ABYSS_PASSWORD = os.environ.get("ABYSS_PASSWORD", "") 
 
-# Bot 2 Database Node
+# Bot 2 Database Node (Long Anime)
 RTDB_WORKER_FEEDBACK = "worker_job_status_long"
 
 ABYSS_UPLOAD_URL = f"https://up.abyss.to/{ABYSS_API_KEY}"
@@ -64,7 +63,7 @@ search_type = payload.get("search_type")
 anime_title = payload.get("title", "Unknown Anime")
 
 safe_anime_title = re.sub(r'[\\/*?:"<>|]', "", anime_title).strip()
-print(f"🚀 [WORKER STARTED - V18 BOT-2 BATCH IN-MEMORY NO-FLOOD] Anime: {safe_anime_title} | Ep: {ep_num}", flush=True)
+print(f"🚀 [WORKER STARTED - V21 BOT-2 BATCH AUTO-RECOVER SESSION] Anime: {safe_anime_title} | Ep: {ep_num}", flush=True)
 
 BASE_DIR = "downloads"
 TEMP_SUB_DIR = f"temp_subs_ep_{ep_num}"
@@ -80,31 +79,17 @@ def notify_status(status="failed", file_size=0):
         })
     except: pass
 
-# ==========================================
-# 🧠 SMART FILTERING & EPISODE EXTRACTION
-# ==========================================
-def is_junk_file(filename):
-    f_lower = filename.lower()
-    junk_pattern = r'\b(movie|special|ova|ncop|nced|opening|ending|recap|preview|batch|log|digest|picture drama|sp\d*)\b'
-    if re.search(junk_pattern, f_lower): return True
-    if "episode of" in f_lower: return True
-    return False
-
-def clean_filename(filename):
-    clean_name = filename.lower()
-    clean_name = re.sub(r'\[.*?\]', ' ', clean_name)
-    clean_name = re.sub(r'\(.*?\)', ' ', clean_name)
-    clean_name = re.sub(r'\b(1080p|720p|480p|x264|x265|h264|hevc|10bit|8bit)\b', ' ', clean_name)
-    return clean_name
-
-def extract_episode_number(filename):
-    clean_name = clean_filename(filename)
-    match = re.search(r'[sS]\d+[eE]0*(\d+)', clean_name)
-    if match: return int(match.group(1))
-    matches = re.findall(r'\s-\s0*(\d{1,4})(?:v\d)?\b', clean_name)
-    if matches: return int(matches[0])
-    match = re.search(r'\b(?:ep|episode)\.?\s?0*(\d+)\b', clean_name)
-    if match: return int(match.group(1))
+def extract_ep_number(filename):
+    clean = re.sub(r'\[.*?\]|\(.*?\)', ' ', filename.lower())
+    clean = re.sub(r'\b(1080p|720p|480p|x264|x265|hevc|10bit|8bit)\b', ' ', clean)
+    m = re.search(r'[sS]\d+[eE]0*(\d+)', clean)
+    if m: return int(m.group(1))
+    m = re.search(r'\b(?:ep|episode)\.?\s?0*(\d+)\b', clean)
+    if m: return int(m.group(1))
+    m = re.search(r'\s-\s0*(\d+)(?:v\d)?\b', clean)
+    if m: return int(m.group(1))
+    m = re.search(r'\b0*(\d+)\b', clean)
+    if m: return int(m.group(1))
     return None
 
 def detect_encoding(file_path):
@@ -151,7 +136,7 @@ def translate_guaranteed_sinhala(text):
                 res = translator.translate(text)
                 if res and has_sinhala_characters(res):
                     return apply_spoken_sinhala(res)
-            except: time.sleep(1)
+            except Exception: time.sleep(1)
 
         try:
             url = "https://clients5.google.com/translate_a/t"
@@ -187,31 +172,19 @@ def download_video():
             from torrentool.api import Torrent
             my_torrent = Torrent.from_file(torrent_files[0])
             target_idx = None
-            target_ep_int = int(ep_num)
-            
             for idx, f in enumerate(my_torrent.files, start=1):
-                if any(f.name.lower().endswith(ext) for ext in ['.mkv', '.mp4']):
-                    if not is_junk_file(f.name):
-                        found_ep = extract_episode_number(os.path.basename(f.name))
-                        if found_ep == target_ep_int:
-                            target_idx = idx
-                            break
-            
+                if f.name.lower().endswith(('.mkv', '.mp4')) and extract_ep_number(os.path.basename(f.name)) == int(ep_num):
+                    target_idx = idx
+                    break
             if target_idx:
                 subprocess.run(['aria2c', '--seed-time=0', f'--select-file={target_idx}', f'--dir={BASE_DIR}', timeout_arg, torrent_files[0]])
-            else:
-                print(f"🛑 Episode {ep_num} not found in this batch! Ending batch processing.", flush=True)
-                try:
-                    db.reference(RTDB_WORKER_FEEDBACK).update({"status": "failed_batch_ended"})
-                except: pass
-                sys.exit(0) 
     else:
         subprocess.run(['aria2c', '--seed-time=0', f'--dir={BASE_DIR}', timeout_arg, magnet])
 
     target_ep_int = int(ep_num)
     for root, dirs, files in os.walk(BASE_DIR):
         for f in files:
-            if f.endswith(('.mkv', '.mp4')) and extract_episode_number(f) == target_ep_int:
+            if f.endswith(('.mkv', '.mp4')) and extract_ep_number(f) == target_ep_int:
                 return os.path.join(root, f)
     for root, dirs, files in os.walk(BASE_DIR):
         for f in files:
@@ -221,6 +194,7 @@ def download_video():
 def extract_and_score_subtitles(video_path):
     print("🔍 Scanning video for softsubs...", flush=True)
     eng_sub_path = os.path.join(TEMP_SUB_DIR, "extracted.srt")
+    
     cmd = ['ffprobe', '-v', 'error', '-select_streams', 's', '-show_entries', 'stream=index:stream_tags=language:stream_tags=title', '-of', 'json', video_path]
     
     try:
@@ -241,12 +215,14 @@ def extract_and_score_subtitles(video_path):
                 try:
                     try: subs = pysubs2.load(temp_sub, encoding='utf-8')
                     except: subs = pysubs2.load(temp_sub, encoding='latin-1')
+                        
                     line_count = len(subs.events)
                     score = line_count
                     if line_count >= 150:
                         if lang == 'en' or 'eng' in title or 'english' in title: score += 100000 
                         elif lang == 'ja' or 'jap' in title or 'romaji' in title: score -= 100000 
                     else: score -= 50000 
+                        
                     valid_subs_data.append({'index': idx, 'path': temp_sub, 'lines': line_count, 'score': score, 'name': title})
                 except Exception: pass
 
@@ -254,10 +230,12 @@ def extract_and_score_subtitles(video_path):
             valid_subs_data.sort(key=lambda x: x['score'], reverse=True)
             best_sub = valid_subs_data[0]
             if best_sub['lines'] >= 150:
+                print(f"🏆 WINNER: Stream {best_sub['index']} ('{best_sub['name']}') with {best_sub['lines']} lines!", flush=True)
                 os.rename(best_sub['path'], eng_sub_path)
                 for loser in valid_subs_data[1:]:
                     if os.path.exists(loser['path']): os.remove(loser['path'])
                 return eng_sub_path
+                
     except Exception: pass
     return None
 
@@ -275,9 +253,11 @@ def process_sinhala_sub(sub_path):
             if is_garbage_sub(e.text): continue
             txt, t_low = clean_vtt_tags(e.text), clean_vtt_tags(e.text).lower()
             if any(x in t_low for x in bad_words) or len(txt) > 250 or len(txt) < 2 or '♪' in txt or '♫' in txt: continue
+            
             if txt == prev_text:
                 if cleaned_events: cleaned_events[-1].end = max(cleaned_events[-1].end, e.end)
                 continue
+                
             seen_texts_count[txt] = seen_texts_count.get(txt, 0) + 1
             if len(txt) > 30 and seen_texts_count[txt] > 2: continue
             
@@ -322,6 +302,7 @@ def process_sinhala_sub(sub_path):
 def process_and_translate_subtitle(video_path):
     eng_sub = os.path.join(TEMP_SUB_DIR, "extracted.srt") 
     extracted_successfully = False
+
     best_sub_path = extract_and_score_subtitles(video_path)
     if best_sub_path and os.path.exists(best_sub_path):
         extracted_successfully = True
@@ -340,7 +321,8 @@ def process_and_translate_subtitle(video_path):
                     subs.events.append(pysubs2.SSAEvent(start=int(segment.start * 1000), end=int(segment.end * 1000), text=segment.text.strip()))
                 subs.save(eng_sub, encoding="utf-8")
                 extracted_successfully = True
-            except: pass
+            except Exception: pass
+        
     if not extracted_successfully: return None
     return process_sinhala_sub(eng_sub)
 
@@ -350,7 +332,7 @@ def get_abyss_token():
     try:
         res = requests.post("https://api.abyss.to/auth/login", json={"email": ABYSS_EMAIL, "password": ABYSS_PASSWORD}).json()
         return res.get("token")
-    except: return None
+    except Exception: return None
 
 def upload_video_to_abyss(video_path):
     print("☁️ Uploading Video to Abyss.to...", flush=True)
@@ -362,6 +344,7 @@ def upload_video_to_abyss(video_path):
             fields = {'file': (upload_filename, open(video_path, 'rb'), mime_type)}
             multipart_data = MultipartEncoder(fields=fields)
             headers = {'Content-Type': multipart_data.content_type, 'User-Agent': 'Mozilla/5.0'}
+
             up_resp = requests.post(ABYSS_UPLOAD_URL, data=multipart_data, headers=headers, timeout=1200)
             try: resp_data = up_resp.json()
             except: 
@@ -383,7 +366,31 @@ def upload_subtitle_to_abyss_api(vhd_code, srt_path, token):
         with open(srt_path, "rb") as f: sub_data = f.read()
         resp = requests.put(url, headers=headers, data=sub_data, timeout=60)
         if resp.status_code == 200: print("🎉 Subtitle Attached Successfully!", flush=True)
-    except: pass
+    except Exception: pass
+
+# ==========================================
+# 🚀 SESSION CACHING SYSTEM (FOR BOT 2)
+# ==========================================
+def get_pyrogram_session():
+    # 🔥 Bot 2 එකේ Session එක පැටලෙන්නෙ නැති වෙන්න වෙනම නමකින් Save කරනවා
+    session_ref = db.reference('bot_config/pyrogram_session_long')
+    session_str = session_ref.get()
+    
+    if session_str:
+        return session_str
+        
+    print("⚠️ Session not found in DB! Creating a NEW Pyrogram session...", flush=True)
+    try:
+        from pyrogram import Client
+        temp_app = Client("temp_maker_long", api_id=int(TG_API_ID), api_hash=TG_API_HASH, bot_token=TG_BOT_TOKEN, in_memory=True)
+        with temp_app:
+            new_session_str = temp_app.export_session_string()
+            session_ref.set(new_session_str)
+            print("✅ New session string generated and saved to DB!", flush=True)
+            return new_session_str
+    except Exception as e:
+        print(f"❌ Failed to create session: {e}", flush=True)
+        return None
 
 # ==========================================
 # 🚀 TELEGRAM UPLOAD FUNCTION (PYROGRAM)
@@ -395,85 +402,70 @@ def upload_to_telegram(video_path, srt_path):
         
     print("📤 Connecting to Telegram Database Channel via Pyrogram...", flush=True)
     
-    # 🔥 මැෂින් කිහිපයක් එකපාර ලොග් වෙන එක වළක්වන්න Stagger Delay එකක් දැම්මා
-    sleep_time = random.randint(15, 120)
-    print(f"⏳ Sleeping for {sleep_time}s to avoid Telegram Flood Wait...", flush=True)
-    time.sleep(sleep_time)
+    from pyrogram import Client
     
-    try:
-        from pyrogram import Client
-        
-        caption = f"🎬 **{safe_anime_title} - Episode {ep_num}**"
-        
-        target_chat_str = str(TG_DB_CHANNEL_ID).strip()
-        if target_chat_str.startswith("@"):
-            target_chat = target_chat_str
-        elif target_chat_str.lstrip("-").isdigit():
-            target_chat = int(target_chat_str)
-        else:
-            target_chat = target_chat_str
-        
-        last_printed_percent = [-1]
-        def progress(current, total):
-            percent = int((current / total) * 100)
-            if percent % 10 == 0 and percent != last_printed_percent[0]:
-                print(f"   📈 Pyrogram Upload Progress: {percent}%", flush=True)
-                last_printed_percent[0] = percent
+    caption = f"🎬 **{safe_anime_title} - Episode {ep_num}**"
+    target_chat_str = str(TG_DB_CHANNEL_ID).strip()
+    target_chat = target_chat_str if target_chat_str.startswith("@") else int(target_chat_str)
+    
+    last_printed_percent = [-1]
+    def progress(current, total):
+        percent = int((current / total) * 100)
+        if percent % 10 == 0 and percent != last_printed_percent[0]:
+            print(f"   📈 Pyrogram Upload Progress: {percent}%", flush=True)
+            last_printed_percent[0] = percent
 
-        MAX_RETRIES = 3
+    MAX_RETRIES = 3
+    
+    for attempt in range(1, MAX_RETRIES + 1):
+        print(f"\n🚀 Telegram Upload Attempt {attempt}/{MAX_RETRIES}...", flush=True)
         
-        for attempt in range(1, MAX_RETRIES + 1):
-            print(f"\n🚀 Telegram Upload Attempt {attempt}/{MAX_RETRIES}...", flush=True)
+        session_string = get_pyrogram_session() 
+        if not session_string:
+            print("⚠️ Session generation failed. Retrying...", flush=True)
+            time.sleep(10)
+            continue
             
-            # 🔥 අලුත්ම In-Memory Session එකක් හදනවා. Firebase Cache එක අයින් කළා.
-            app = Client(
-                f"mem_session_long_{ep_num}", 
-                api_id=int(TG_API_ID), 
-                api_hash=TG_API_HASH, 
-                bot_token=TG_BOT_TOKEN, 
-                in_memory=True
-            )
-            
-            msg_id = None
-            try:
-                with app:
-                    last_printed_percent[0] = -1 
-                    
-                    print("🚀 Uploading Video File...", flush=True)
-                    msg = app.send_document(
-                        chat_id=target_chat,
-                        document=video_path,
-                        caption=caption,
-                        force_document=False,
-                        progress=progress
-                    )
-                    
-                    if msg and srt_path and os.path.exists(srt_path):
-                        print("🚀 Uploading Subtitle File...", flush=True)
-                        app.send_document(
-                            chat_id=target_chat,
-                            document=srt_path,
-                            reply_to_message_id=msg.id
-                        )
-                    msg_id = msg.id
-                    
-            except Exception as e:
-                print(f"❌ Pyrogram Upload Error: {e}", flush=True)
-            
-            if msg_id:
-                print(f"✅ Telegram Upload Success! Message ID: {msg_id}", flush=True)
-                return msg_id
-            
-            if attempt < MAX_RETRIES:
-                print("🔄 Retrying in 10 seconds...", flush=True)
-                time.sleep(10)
+        app = Client("memory_upload_long", session_string=session_string, api_id=int(TG_API_ID), api_hash=TG_API_HASH, in_memory=True)
+        
+        msg_id = None
+        try:
+            with app:
+                print("🚀 Uploading Video File...", flush=True)
+                msg = app.send_document(
+                    chat_id=target_chat,
+                    document=video_path,
+                    caption=caption,
+                    force_document=False,
+                    progress=progress
+                )
                 
-        print("❌ All upload attempts failed.", flush=True)
-        return None
+                if msg and srt_path and os.path.exists(srt_path):
+                    print("🚀 Uploading Subtitle File...", flush=True)
+                    app.send_document(
+                        chat_id=target_chat,
+                        document=srt_path,
+                        reply_to_message_id=msg.id
+                    )
+                msg_id = msg.id
+                
+        except Exception as e:
+            error_text = str(e)
+            print(f"❌ Pyrogram Error: {error_text}", flush=True)
             
-    except Exception as e:
-        print(f"❌ Critical Telegram Upload Error: {e}", flush=True)
-        return None
+            # 🔥 Error එක ආවොත් Session එක මකලා දානවා (Auto-Recovery)
+            if "AUTH_KEY_DUPLICATED" in error_text or "406" in error_text or "AUTH" in error_text:
+                print("⚠️ Ghost Connection Detected! Deleting old session from DB to create a fresh one...", flush=True)
+                db.reference('bot_config/pyrogram_session_long').delete()
+        
+        if msg_id:
+            print(f"✅ Telegram Upload Success! Message ID: {msg_id}", flush=True)
+            return msg_id
+            
+        time.sleep(10)
+        
+    print("❌ All upload attempts failed.", flush=True)
+    return None
 
 # ==========================================
 # 💾 FIRESTORE UPDATE
@@ -488,7 +480,6 @@ def update_database(file_code, tg_msg_id=None):
         'links': {'abyss_video_id': file_code, 'abyss_embed': f"https://abyss.to/embed/{file_code}"},
         'last_updated': firestore.SERVER_TIMESTAMP
     }
-    
     if tg_msg_id:
         data['telegram'] = {'message_id': tg_msg_id, 'deep_link_id': deep_link_id}
         
@@ -505,7 +496,7 @@ if original_video:
     original_filename = os.path.basename(original_video)
     clean_video = os.path.join(TEMP_SUB_DIR, original_filename)
     
-    # 🔥 DUAL-AUDIO SMART LOGIC
+    # 🔥 DUAL-AUDIO SMART LOGIC 
     try:
         probe_cmd = ['ffprobe', '-v', 'error', '-select_streams', 'a', '-show_entries', 'stream=index:stream_tags=language:stream_tags=title', '-of', 'json', original_video]
         probe_res = subprocess.run(probe_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
@@ -525,6 +516,7 @@ if original_video:
                 if lang in ['ja', 'jpn', 'japanese'] or 'japanese' in title or '日本語' in title or 'nihongo' in title:
                     jpn_index = s['index']
                     break
+                
                 if lang not in ['en', 'eng', 'english'] and 'english' not in title and non_eng_index is None:
                     non_eng_index = s['index']
             
@@ -543,7 +535,7 @@ if original_video:
     except Exception as e:
         print(f"⚠️ Audio parsing failed, falling back to basic cleanup...", flush=True)
         subprocess.run(['ffmpeg', '-i', original_video, '-c', 'copy', '-sn', clean_video, '-y'], stderr=subprocess.DEVNULL)
-
+    
     video_to_upload = clean_video if os.path.exists(clean_video) else original_video
     upload_result = upload_video_to_abyss(video_to_upload)
     
