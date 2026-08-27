@@ -398,8 +398,14 @@ def upload_to_telegram(video_path, srt_path):
         
         caption = f"🎬 **{safe_anime_title} - Episode {ep_num}**"
         
-        # 🔥 මෙතන ID එක ඉලක්කමක් විදිහටම යන නිසා Pyrogram වලට අවුලක් නෑ
-        target_chat = int(TG_DB_CHANNEL_ID) 
+        # 🔥 මෙතනින් තමයි ID එකද, @Username එකද කියලා හරියටම අඳුරගන්නේ
+        target_chat_str = str(TG_DB_CHANNEL_ID).strip()
+        if target_chat_str.startswith("@"):
+            target_chat = target_chat_str
+        elif target_chat_str.lstrip("-").isdigit():
+            target_chat = int(target_chat_str)
+        else:
+            target_chat = target_chat_str
         
         last_printed_percent = [-1]
         def progress(current, total):
