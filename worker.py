@@ -13,6 +13,7 @@ from requests_toolbelt.multipart.encoder import MultipartEncoder
 from faster_whisper import WhisperModel
 import urllib.parse
 import concurrent.futures
+import random  # 🔥 Random Delay එකට මේක අලුතින් දැම්මා
 from deep_translator import GoogleTranslator
 
 # --- 🗣️ SPOKEN SINHALA DICTIONARY ---
@@ -63,7 +64,7 @@ search_type = payload.get("search_type")
 anime_title = payload.get("title", "Unknown Anime")
 
 safe_anime_title = re.sub(r'[\\/*?:"<>|]', "", anime_title).strip()
-print(f"🚀 [WORKER STARTED - V15 BOT-2 BATCH PYROGRAM FAST UPLOAD + WHISPER SMALL] Anime: {safe_anime_title} | Ep: {ep_num}", flush=True)
+print(f"🚀 [WORKER STARTED - V16 BATCH PYROGRAM NO-FLOOD] Anime: {safe_anime_title} | Ep: {ep_num}", flush=True)
 
 BASE_DIR = "downloads"
 TEMP_SUB_DIR = f"temp_subs_ep_{ep_num}"
@@ -332,7 +333,6 @@ def process_and_translate_subtitle(video_path):
         subprocess.run(['ffmpeg', '-i', video_path, '-vn', '-acodec', 'libmp3lame', '-q:a', '2', audio_path, '-y'], stderr=subprocess.DEVNULL)
         if os.path.exists(audio_path):
             try:
-                # 🔥 Whisper Small Model එක සහ vad_filter එකතු කළා
                 model = WhisperModel("small", device="cpu", compute_type="int8")
                 segments, info = model.transcribe(audio_path, task="translate", vad_filter=True, beam_size=5)
                 subs = pysubs2.SSAFile()
@@ -394,6 +394,12 @@ def upload_to_telegram(video_path, srt_path):
         return None
         
     print("📤 Connecting to Telegram Database Channel via Pyrogram...", flush=True)
+    
+    # 🔥 මෙතන තමයි ගේම් චේන්ජර් එක! එකපාර Log in වෙන එක වළක්වන්න Random Time එකක් නිදාගන්නවා
+    sleep_time = random.randint(10, 75)
+    print(f"⏳ Avoiding Telegram Flood! Waiting {sleep_time} seconds before logging in...", flush=True)
+    time.sleep(sleep_time)
+    
     try:
         from pyrogram import Client
         
@@ -416,17 +422,16 @@ def upload_to_telegram(video_path, srt_path):
 
         MAX_RETRIES = 3
         
-        # 🔥 එකම Session එක පාවිච්චි කරන්න නම Static කළා
-        session_name = 'tg_uploader_main_session_long'
-        
         for attempt in range(1, MAX_RETRIES + 1):
             print(f"\n🚀 Telegram Upload Attempt {attempt}/{MAX_RETRIES}...", flush=True)
             
+            # 🔥 GitHub Actions මකන නිසා in_memory=True පාවිච්චි කරනවා
             app = Client(
-                session_name,
+                "tg_memory_session",
                 api_id=int(TG_API_ID),
                 api_hash=TG_API_HASH,
-                bot_token=TG_BOT_TOKEN
+                bot_token=TG_BOT_TOKEN,
+                in_memory=True
             )
             
             msg_id = None
