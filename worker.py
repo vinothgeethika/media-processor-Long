@@ -416,10 +416,11 @@ def upload_to_telegram(video_path, srt_path):
 
         MAX_RETRIES = 3
         
+        # 🔥 එකම Session එක පාවිච්චි කරන්න නම Static කළා
+        session_name = 'tg_uploader_main_session_long'
+        
         for attempt in range(1, MAX_RETRIES + 1):
             print(f"\n🚀 Telegram Upload Attempt {attempt}/{MAX_RETRIES}...", flush=True)
-            
-            session_name = f'tg_uploader_session_long_{anime_id}_{ep_num}_{attempt}'
             
             app = Client(
                 session_name,
@@ -454,11 +455,7 @@ def upload_to_telegram(video_path, srt_path):
             except Exception as e:
                 print(f"❌ Pyrogram Upload Error: {e}", flush=True)
             
-            # Session ෆයිල් ටික මකලා දානවා (GitHub Actions වල Storage පිරෙන්නේ නැති වෙන්න)
-            try:
-                os.remove(f"{session_name}.session")
-                os.remove(f"{session_name}.session-journal")
-            except: pass
+            # 🔥 කලින් තිබුණ Session ෆයිල් මකන කෑල්ල සම්පූර්ණයෙන්ම අයින් කළා.
             
             if msg_id:
                 print(f"✅ Telegram Upload Success! Message ID: {msg_id}", flush=True)
