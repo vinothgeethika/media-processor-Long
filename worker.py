@@ -63,7 +63,7 @@ search_type = payload.get("search_type")
 anime_title = payload.get("title", "Unknown Anime")
 
 safe_anime_title = re.sub(r'[\\/*?:"<>|]', "", anime_title).strip()
-print(f"🚀 [WORKER STARTED - V14 PYROGRAM FAST UPLOAD] Anime: {safe_anime_title} | Ep: {ep_num}", flush=True)
+print(f"🚀 [WORKER STARTED - V15 BOT-2 BATCH PYROGRAM FAST UPLOAD + WHISPER SMALL] Anime: {safe_anime_title} | Ep: {ep_num}", flush=True)
 
 BASE_DIR = "downloads"
 TEMP_SUB_DIR = f"temp_subs_ep_{ep_num}"
@@ -327,13 +327,14 @@ def process_and_translate_subtitle(video_path):
         eng_sub = best_sub_path
 
     if not extracted_successfully:
-        print("⚠️ Starting AI Audio Transcription as fallback...", flush=True)
+        print("⚠️ Starting AI Audio Transcription as fallback (small model)...", flush=True)
         audio_path = os.path.join(TEMP_SUB_DIR, "audio.mp3")
         subprocess.run(['ffmpeg', '-i', video_path, '-vn', '-acodec', 'libmp3lame', '-q:a', '2', audio_path, '-y'], stderr=subprocess.DEVNULL)
         if os.path.exists(audio_path):
             try:
-                model = WhisperModel("base", device="cpu", compute_type="int8")
-                segments, info = model.transcribe(audio_path, task="translate")
+                # 🔥 Whisper Small Model එක සහ vad_filter එකතු කළා
+                model = WhisperModel("small", device="cpu", compute_type="int8")
+                segments, info = model.transcribe(audio_path, task="translate", vad_filter=True, beam_size=5)
                 subs = pysubs2.SSAFile()
                 for segment in segments:
                     subs.events.append(pysubs2.SSAEvent(start=int(segment.start * 1000), end=int(segment.end * 1000), text=segment.text.strip()))
@@ -398,7 +399,6 @@ def upload_to_telegram(video_path, srt_path):
         
         caption = f"🎬 **{safe_anime_title} - Episode {ep_num}**"
         
-        # 🔥 මෙතනින් තමයි ID එකද, @Username එකද කියලා හරියටම අඳුරගන්නේ
         target_chat_str = str(TG_DB_CHANNEL_ID).strip()
         if target_chat_str.startswith("@"):
             target_chat = target_chat_str
@@ -454,8 +454,6 @@ def upload_to_telegram(video_path, srt_path):
                     
             except Exception as e:
                 print(f"❌ Pyrogram Upload Error: {e}", flush=True)
-            
-            # 🔥 කලින් තිබුණ Session ෆයිල් මකන කෑල්ල සම්පූර්ණයෙන්ම අයින් කළා.
             
             if msg_id:
                 print(f"✅ Telegram Upload Success! Message ID: {msg_id}", flush=True)
